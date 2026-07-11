@@ -28,6 +28,13 @@ type pairingResponse struct {
 	Code      string    `json:"code"`
 	ExpiresAt time.Time `json:"expiresAt"`
 }
+type presenceResponse struct {
+	Devices []devicePresence `json:"devices"`
+}
+type devicePresence struct {
+	DeviceID string `json:"deviceId"`
+	Online   bool   `json:"online"`
+}
 type exchangeRequest struct {
 	Code     string `json:"code"`
 	DeviceID string `json:"deviceId"`
@@ -57,6 +64,7 @@ func main() {
 	}))
 	mux.HandleFunc("/api/pairings", cors(data.createPairing))
 	mux.HandleFunc("/api/pairings/exchange", cors(data.exchange))
+	mux.HandleFunc("/api/presence", cors(data.presence))
 	mux.HandleFunc("/api/signaling", data.signal)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	log.Println("Yuzu pairing service listening on :8080")
@@ -154,6 +162,31 @@ func (s *store) exchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, exchangeResponse{PeerDeviceID: entry.DeviceID})
+}
+
+func (s *store) presence(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var input struct {
+		DeviceIDs []string `json:"deviceIds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "invalid presence request", http.StatusBadRequest)
+		return
+	}
+	s.Lock()
+	defer s.Unlock()
+	devices := make([]devicePresence, 0, len(input.DeviceIDs))
+	for _, deviceID := range input.DeviceIDs {
+		trimmed := strings.TrimSpace(deviceID)
+		if trimmed == "" {
+			continue
+		}
+		devices = append(devices, devicePresence{DeviceID: trimmed, Online: s.clients[trimmed] != nil})
+	}
+	respond(w, presenceResponse{Devices: devices})
 }
 
 func (s *store) newCode() string {
