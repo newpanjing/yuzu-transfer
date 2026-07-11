@@ -5,6 +5,7 @@ import { createId } from '../lib/id';
 import { FileSaveDialog } from './FileSaveDialog';
 import { ImagePreviewDialog } from './ImagePreviewDialog';
 import { AvatarBadge } from './AvatarBadge';
+import { Toast } from './Toast';
 import type { PeerTransport } from '../lib/peer';
 import type { TransferItem } from '../types';
 
@@ -54,6 +55,12 @@ export function TransferWorkspace({ nickname, avatar, selfNickname, selfAvatar, 
       setPendingSave(received);
     }
   }, [items]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(''), 2400);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   const append = (item: TransferItem) => onItemsChange((current) => [...current.filter((currentItem) => currentItem.id !== item.id), item]);
 
@@ -174,7 +181,6 @@ export function TransferWorkspace({ nickname, avatar, selfNickname, selfAvatar, 
       </section>
 
       <section className="composer">
-        {notice && <span className="notice">{notice}</span>}
         <input ref={input} hidden type="file" multiple onChange={(event) => void addFiles(event.target.files)} />
         <button className="icon-button" onClick={() => input.current?.click()} aria-label="选择文件"><Paperclip size={20} /></button>
         <input value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendText(); }} placeholder={blocked ? '该会话已屏蔽' : connected ? '输入消息或拖拽文件到此处' : '对方不在线，输入消息后将提示'} disabled={blocked} />
@@ -182,6 +188,7 @@ export function TransferWorkspace({ nickname, avatar, selfNickname, selfAvatar, 
         <button className="send-button" onClick={sendText} aria-label="发送" disabled={blocked}><Send size={18} /></button>
       </section>
 
+      {notice && <Toast message={notice} />}
       {preview?.objectUrl && <ImagePreviewDialog src={preview.objectUrl} alt={preview.name} onClose={() => setPreview(undefined)} />}
       {pendingSave && <FileSaveDialog item={pendingSave} onClose={() => setPendingSave(undefined)} />}
     </main>
