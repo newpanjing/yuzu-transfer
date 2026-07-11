@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -35,20 +37,72 @@ type exchangeResponse struct {
 }
 type store struct {
 	sync.Mutex
-	pairs map[string]pairing
+	pairs   map[string]pairing
+	clients map[string]*websocket.Conn
 }
 
+type signalMessage struct {
+	To      string          `json:"to"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+var wsUpgrader = websocket.Upgrader{CheckOrigin: func(_ *http.Request) bool { return true }}
+
 func main() {
-	data := &store{pairs: make(map[string]pairing)}
+	data := &store{pairs: make(map[string]pairing), clients: make(map[string]*websocket.Conn)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/config", cors(func(w http.ResponseWriter, r *http.Request) {
 		respond(w, map[string]int64{"relayMaxFileSize": relayMaxFileSize})
 	}))
 	mux.HandleFunc("/api/pairings", cors(data.createPairing))
 	mux.HandleFunc("/api/pairings/exchange", cors(data.exchange))
+	mux.HandleFunc("/api/signaling", data.signal)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	log.Println("Yuzu pairing service listening on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
+}
+
+func (s *store) signal(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.URL.Query().Get("deviceId")
+	if deviceID == "" {
+		http.Error(w, "deviceId is required", http.StatusBadRequest)
+		return
+	}
+	connection, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	s.Lock()
+	if previous := s.clients[deviceID]; previous != nil {
+		_ = previous.Close()
+	}
+	s.clients[deviceID] = connection
+	s.Unlock()
+	defer func() {
+		s.Lock()
+		if s.clients[deviceID] == connection {
+			delete(s.clients, deviceID)
+		}
+		s.Unlock()
+		_ = connection.Close()
+	}()
+
+	for {
+		var message signalMessage
+		if err := connection.ReadJSON(&message); err != nil {
+			return
+		}
+		if message.To == "" || message.Type == "" {
+			continue
+		}
+		s.Lock()
+		target := s.clients[message.To]
+		s.Unlock()
+		if target != nil {
+			_ = target.WriteJSON(map[string]any{"from": deviceID, "type": message.Type, "payload": message.Payload})
+		}
+	}
 }
 
 func (s *store) createPairing(w http.ResponseWriter, r *http.Request) {
