@@ -1,5 +1,10 @@
 import { DEFAULT_PEER_AVATAR, DEFAULT_PEER_NICKNAME, STORAGE_KEYS } from '../constants';
-import type { Conversation } from '../types';
+import type { Conversation, TransferItem } from '../types';
+
+function restoreTransferItem(item: TransferItem): TransferItem {
+  if (!item.objectUrl) return item;
+  return { ...item, objectUrl: undefined, expired: true, progress: item.progress === undefined ? undefined : 1 };
+}
 
 export function loadConversations(): Conversation[] {
   try {
@@ -8,7 +13,7 @@ export function loadConversations(): Conversation[] {
       nickname: conversation.nickname ?? DEFAULT_PEER_NICKNAME,
       avatar: conversation.avatar ?? DEFAULT_PEER_AVATAR,
       online: conversation.online ?? false,
-      messages: conversation.messages ?? [],
+      messages: (conversation.messages ?? []).map((message) => restoreTransferItem(message)),
       lastConnectedAt: conversation.lastConnectedAt ?? new Date().toISOString(),
     }));
   }
