@@ -15,6 +15,8 @@ export class PeerTransport {
   private peerId = '';
   private receivedFile?: ReceivedFile;
   private signalingReady?: Promise<void>;
+  private signalingFailed = false;
+  private closed = false;
 
   constructor(private readonly deviceId: string, private readonly nickname: string, private readonly callbacks: Callbacks) {}
 
@@ -23,15 +25,20 @@ export class PeerTransport {
     const port = isDevelopment ? ':8080' : location.port ? `:${location.port}` : '';
     const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
     this.socket = new WebSocket(`${scheme}//${location.hostname}${port}/api/signaling?deviceId=${encodeURIComponent(this.deviceId)}`);
-    this.signalingReady = new Promise((resolve, reject) => {
+    this.signalingReady = new Promise((resolve) => {
       this.socket!.onopen = () => resolve();
-      this.socket!.onerror = () => { this.callbacks.onError('信令连接失败，请检查服务是否可用。'); reject(new Error('signaling unavailable')); };
+      this.socket!.onerror = () => {
+        this.signalingFailed = true;
+        if (!this.closed) this.callbacks.onError('信令连接失败，请检查服务是否可用。');
+        resolve();
+      };
     });
     this.socket.onmessage = (event) => void this.handleSignal(JSON.parse(event.data) as Signal);
   }
 
   async start(peerId: string) {
     await this.signalingReady;
+    if (this.signalingFailed || this.socket?.readyState !== WebSocket.OPEN) throw new Error('signaling unavailable');
     this.peerId = peerId;
     this.callbacks.onPeerId(peerId);
     const peer = this.createPeer();
@@ -53,7 +60,7 @@ export class PeerTransport {
     this.sendJson({ type: DATA_TYPE.fileEnd, id });
   }
 
-  close() { this.channel?.close(); this.peer?.close(); this.socket?.close(); }
+  close() { this.closed = true; this.channel?.close(); this.peer?.close(); this.socket?.close(); }
 
   private createPeer() {
     const peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
