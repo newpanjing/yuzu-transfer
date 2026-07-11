@@ -10,10 +10,19 @@ const SIGNALING_PORT = ':8080';
 const SIGNALING_ERROR = '信令连接失败，请检查服务是否可用。';
 const DATA_CHANNEL_ERROR = '数据通道尚未连接';
 
-export type IncomingTransfer = { id: string; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; direction: 'incoming' | 'outgoing'; text?: string; progress?: number };
+export type IncomingTransfer = { id: string; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; direction: 'incoming' | 'outgoing'; text?: string; progress?: number; transferredBytes?: number; speedBytes?: number; remainingSeconds?: number };
 type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onFileProgress: (item: IncomingTransfer) => void; onPeerProfile: (profile: DeviceProfile) => void; onPeerId: (deviceId: string) => void; onError: (message: string) => void };
 type Signal = { from: string; type: string; payload: RTCSessionDescriptionInit | RTCIceCandidateInit };
-type ReceivedFile = { id: string; name: string; size: number; mime: string; chunks: ArrayBuffer[] };
+type ReceivedFile = { id: string; name: string; size: number; mime: string; chunks: ArrayBuffer[]; sentAt: string; startedAt: number; transferredBytes: number };
+
+function buildTransferMetrics(transferredBytes: number, totalBytes: number, startedAt: number) {
+  const progress = totalBytes === 0 ? 1 : Math.min(transferredBytes / totalBytes, 1);
+  const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.001);
+  const speedBytes = transferredBytes / elapsedSeconds;
+  const remainingBytes = Math.max(totalBytes - transferredBytes, 0);
+  const remainingSeconds = speedBytes > 0 && remainingBytes > 0 ? remainingBytes / speedBytes : 0;
+  return { progress, transferredBytes, speedBytes, remainingSeconds };
+}
 
 export class PeerTransport {
   private socket?: WebSocket;
@@ -68,14 +77,15 @@ export class PeerTransport {
     const id = transferId ?? `${Date.now()}-${file.name}`;
     const type = file.type.startsWith('image/') ? 'image' : 'file';
     const sentAt = new Date().toISOString();
+    const startedAt = Date.now();
     let sentBytes = 0;
-    this.callbacks.onFileProgress({ id, name: file.name, size: file.size, type, sentAt, objectUrl, direction: 'outgoing', progress: 0 });
+    this.callbacks.onFileProgress({ id, name: file.name, size: file.size, type, sentAt, objectUrl, direction: 'outgoing', ...buildTransferMetrics(0, file.size, startedAt) });
     this.sendJson({ type: DATA_TYPE.fileStart, id, name: file.name, size: file.size, mime: file.type, sentAt });
     for (let offset = 0; offset < file.size; offset += FILE_CHUNK_SIZE) {
       const buffer = await file.slice(offset, offset + FILE_CHUNK_SIZE).arrayBuffer();
       this.channel.send(buffer);
       sentBytes += buffer.byteLength;
-      this.callbacks.onFileProgress({ id, name: file.name, size: file.size, type, sentAt, objectUrl, direction: 'outgoing', progress: sentBytes / file.size });
+      this.callbacks.onFileProgress({ id, name: file.name, size: file.size, type, sentAt, objectUrl, direction: 'outgoing', ...buildTransferMetrics(sentBytes, file.size, startedAt) });
     }
     this.sendJson({ type: DATA_TYPE.fileEnd, id });
   }
@@ -153,8 +163,8 @@ export class PeerTransport {
       if (!this.receivedFile) return;
       const chunk = data instanceof Blob ? await data.arrayBuffer() : data;
       this.receivedFile.chunks.push(chunk);
-      const loadedBytes = this.receivedFile.chunks.reduce((total, item) => total + item.byteLength, 0);
-      this.callbacks.onFileProgress({ id: this.receivedFile.id, name: this.receivedFile.name, size: this.receivedFile.size, type: this.receivedFile.mime.startsWith('image/') ? 'image' : 'file', sentAt: new Date().toISOString(), direction: 'incoming', progress: Math.min(loadedBytes / this.receivedFile.size, 1) });
+      this.receivedFile.transferredBytes += chunk.byteLength;
+      this.callbacks.onFileProgress({ id: this.receivedFile.id, name: this.receivedFile.name, size: this.receivedFile.size, type: this.receivedFile.mime.startsWith('image/') ? 'image' : 'file', sentAt: this.receivedFile.sentAt, direction: 'incoming', ...buildTransferMetrics(this.receivedFile.transferredBytes, this.receivedFile.size, this.receivedFile.startedAt) });
       return;
     }
     const message = JSON.parse(data) as Record<string, string | number>;
@@ -167,14 +177,14 @@ export class PeerTransport {
       return;
     }
     if (message.type === DATA_TYPE.fileStart) {
-      this.receivedFile = { id: String(message.id), name: String(message.name), size: Number(message.size), mime: String(message.mime), chunks: [] };
-      this.callbacks.onFileProgress({ id: this.receivedFile.id, name: this.receivedFile.name, size: this.receivedFile.size, type: this.receivedFile.mime.startsWith('image/') ? 'image' : 'file', sentAt: new Date().toISOString(), direction: 'incoming', progress: 0 });
+      this.receivedFile = { id: String(message.id), name: String(message.name), size: Number(message.size), mime: String(message.mime), chunks: [], sentAt: String(message.sentAt), startedAt: Date.now(), transferredBytes: 0 };
+      this.callbacks.onFileProgress({ id: this.receivedFile.id, name: this.receivedFile.name, size: this.receivedFile.size, type: this.receivedFile.mime.startsWith('image/') ? 'image' : 'file', sentAt: this.receivedFile.sentAt, direction: 'incoming', ...buildTransferMetrics(0, this.receivedFile.size, this.receivedFile.startedAt) });
       return;
     }
     if (message.type === DATA_TYPE.fileEnd && this.receivedFile) {
       const file = this.receivedFile;
       const blob = new Blob(file.chunks, { type: file.mime });
-      this.callbacks.onTransfer({ id: file.id, name: file.name, size: file.size, type: file.mime.startsWith('image/') ? 'image' : 'file', sentAt: new Date().toISOString(), objectUrl: URL.createObjectURL(blob), direction: 'incoming', progress: 1 });
+      this.callbacks.onTransfer({ id: file.id, name: file.name, size: file.size, type: file.mime.startsWith('image/') ? 'image' : 'file', sentAt: file.sentAt, objectUrl: URL.createObjectURL(blob), direction: 'incoming', ...buildTransferMetrics(file.size, file.size, file.startedAt) });
       this.receivedFile = undefined;
     }
   }

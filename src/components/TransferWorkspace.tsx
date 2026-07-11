@@ -38,6 +38,14 @@ const BLOCKED_STATUS_TEXT = '该会话已屏蔽';
 
 const formatSize = (size: number) => size < MEBIBYTE ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / MEBIBYTE).toFixed(1)} MB`;
 const formatTime = (sentAt: string) => new Date(sentAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+const formatSpeed = (speedBytes = 0) => speedBytes < MEBIBYTE ? `${Math.max(1, Math.round(speedBytes / 1024))} KB/s` : `${(speedBytes / MEBIBYTE).toFixed(1)} MB/s`;
+const formatDuration = (seconds = 0) => {
+  const rounded = Math.max(0, Math.ceil(seconds));
+  if (rounded < 60) return `${rounded} 秒`;
+  const minutes = Math.floor(rounded / 60);
+  const remainder = rounded % 60;
+  return `${minutes} 分 ${remainder} 秒`;
+};
 
 export function TransferWorkspace({ nickname, avatar, selfNickname, selfAvatar, blocked, onNicknameChange, onAvatarChange, onDeleteConversation, onToggleBlocked, relayLimit, transport, connected, items, onItemsChange }: Props) {
   const [message, setMessage] = useState('');
@@ -95,7 +103,7 @@ export function TransferWorkspace({ nickname, avatar, selfNickname, selfAvatar, 
       const sentAt = new Date().toISOString();
       const type = file.type.startsWith('image/') ? 'image' : 'file';
       const previewUrl = type === 'image' ? URL.createObjectURL(file) : undefined;
-      append({ id: transferId, name: file.name, size: file.size, type, sentAt, direction: 'outgoing', objectUrl: previewUrl, progress: 0 });
+      append({ id: transferId, name: file.name, size: file.size, type, sentAt, direction: 'outgoing', objectUrl: previewUrl, progress: 0, transferredBytes: 0, speedBytes: 0, remainingSeconds: 0 });
       try {
         await transport!.sendFile(file, previewUrl, transferId);
       } catch {
@@ -166,6 +174,15 @@ export function TransferWorkspace({ nickname, avatar, selfNickname, selfAvatar, 
                 <strong>{item.name}</strong>
                 <small>{formatSize(item.size)}</small>
                 {item.expired && <em className="expired-hint">{item.type === 'image' ? EXPIRED_IMAGE_TEXT : EXPIRED_FILE_TEXT}</em>}
+                {item.progress !== undefined && (
+                  <small className="transfer-meta">
+                    {formatSize(item.transferredBytes ?? 0)} / {formatSize(item.size)}
+                    {' · '}
+                    {formatSpeed(item.speedBytes)}
+                    {' · '}
+                    {item.progress >= 1 ? '已完成' : `剩余 ${formatDuration(item.remainingSeconds)}`}
+                  </small>
+                )}
                 {item.progress !== undefined && item.progress < 1 && (
                   <span className="transfer-progress">
                     <i style={{ width: `${Math.round(item.progress * 100)}%` }} />
