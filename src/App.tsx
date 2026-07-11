@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { BadgeCheck, Monitor, ShieldCheck } from 'lucide-react';
 import { Brand } from './components/Brand';
 import { ConnectionPanel } from './components/ConnectionPanel';
+import { ErrorDialog } from './components/ErrorDialog';
 import { Sidebar } from './components/Sidebar';
 import { TransferWorkspace } from './components/TransferWorkspace';
 import { DEFAULT_RELAY_LIMIT } from './constants';
@@ -21,6 +22,7 @@ export default function App() {
   const [joinCode, setJoinCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [pairingError, setPairingError] = useState('');
   const [relayLimit, setRelayLimit] = useState(DEFAULT_RELAY_LIMIT);
   const [transport, setTransport] = useState<PeerTransport>();
   const [connected, setConnected] = useState(false);
@@ -57,7 +59,7 @@ export default function App() {
     instance.connectSignaling(); setTransport(instance); return () => instance.close();
   }, [deviceId]);
   useEffect(() => { const code = new URLSearchParams(location.search).get('code'); if (code?.length === 4) { setJoinCode(code); autoJoinCode.current = code; } }, []);
-  const join = async (code = joinCode) => { if (!transport) return; setBusy(true); setError(''); try { const result = await exchangePairing(code, deviceId); await transport.start(result.peerDeviceId); setView('transfer'); } catch { setError('验证码无效、已过期，或不能连接当前设备。'); } finally { setBusy(false); } };
+  const join = async (code = joinCode) => { if (!transport) return; setBusy(true); setError(''); try { const result = await exchangePairing(code, deviceId); await transport.start(result.peerDeviceId); setView('transfer'); } catch { setPairingError('验证码不正确、已过期，或该设备当前不可连接。请确认后重试。'); } finally { setBusy(false); } };
   useEffect(() => { if (autoJoinCode.current && transport) { void join(autoJoinCode.current); autoJoinCode.current = ''; } }, [transport]);
   const changeNickname = (name: string) => { saveNickname(name); setNickname(name); };
   const selectedConversation = conversations.find((conversation) => conversation.deviceId === selectedDeviceId);
@@ -65,5 +67,5 @@ export default function App() {
   const updateSelectedMessages = (next: TransferItem[] | ((current: TransferItem[]) => TransferItem[])) => { if (!selectedDeviceId) return; updateConversation(selectedDeviceId, (conversation) => ({ ...conversation, messages: typeof next === 'function' ? next(conversation.messages) : next })); };
   const isSelectedConnected = connected && activePeerRef.current === selectedDeviceId;
   const qrValue = `${location.origin}?code=${pairingCode}`;
-  return <div className="app-shell"><header><Brand /><div className="header-meta"><ShieldCheck size={17} /> 不登录 · 不存文件 · 不留记录</div></header><div className="app-body"><Sidebar conversations={conversations} activeDeviceId={selectedDeviceId} onConnect={() => setView('connect')} onSelect={(deviceId) => { setSelectedDeviceId(deviceId); setView('transfer'); }} />{view === 'connect' ? <main className="connect-view"><div className="view-heading"><span className="eyebrow"><BadgeCheck size={17} /> 安全直连</span><h1>连接新设备</h1><p>在手机上打开柚子快传，扫描二维码或输入验证码连接</p></div><ConnectionPanel pairingCode={pairingCode} qrValue={qrValue} joinCode={joinCode} onJoinCodeChange={setJoinCode} onJoin={() => void join()} onRefresh={() => void refresh()} busy={busy} />{error && <div className="error-banner">{error}</div>}<div className="privacy-banner"><ShieldCheck size={20} /><span><strong>无痕传输</strong> · 文件优先在设备间直连，不保存至服务器</span></div></main> : <TransferWorkspace nickname={selectedConversation?.nickname ?? DEFAULT_PEER_NICKNAME} onNicknameChange={changeNickname} relayLimit={relayLimit} transport={transport} connected={isSelectedConnected} items={selectedMessages} onItemsChange={updateSelectedMessages} />}</div><footer><span>设备 ID：{deviceId.slice(0, 8)}</span><span><Monitor size={15} /> 当前设备已就绪</span><span><ShieldCheck size={16} /> 无痕模式已开启</span></footer></div>;
+  return <div className="app-shell"><header><Brand /><div className="header-meta"><ShieldCheck size={17} /> 不登录 · 不存文件 · 不留记录</div></header><div className="app-body"><Sidebar conversations={conversations} activeDeviceId={selectedDeviceId} onConnect={() => setView('connect')} onSelect={(deviceId) => { setSelectedDeviceId(deviceId); setView('transfer'); }} />{view === 'connect' ? <main className="connect-view"><div className="view-heading"><span className="eyebrow"><BadgeCheck size={17} /> 安全直连</span><h1>连接新设备</h1><p>在手机上打开柚子快传，扫描二维码或输入验证码连接</p></div><ConnectionPanel pairingCode={pairingCode} qrValue={qrValue} joinCode={joinCode} onJoinCodeChange={setJoinCode} onJoin={() => void join()} onRefresh={() => void refresh()} busy={busy} />{error && <div className="error-banner">{error}</div>}<div className="privacy-banner"><ShieldCheck size={20} /><span><strong>无痕传输</strong> · 文件优先在设备间直连，不保存至服务器</span></div></main> : <TransferWorkspace nickname={selectedConversation?.nickname ?? DEFAULT_PEER_NICKNAME} onNicknameChange={changeNickname} relayLimit={relayLimit} transport={transport} connected={isSelectedConnected} items={selectedMessages} onItemsChange={updateSelectedMessages} />}</div><footer><span>设备 ID：{deviceId.slice(0, 8)}</span><span><Monitor size={15} /> 当前设备已就绪</span><span><ShieldCheck size={16} /> 无痕模式已开启</span></footer>{pairingError && <ErrorDialog message={pairingError} onClose={() => setPairingError('')} />}</div>;
 }
