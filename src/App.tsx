@@ -42,7 +42,7 @@ export default function App() {
 
   const addTransfer = (item: TransferItem) => {
     const deviceId = activePeerRef.current;
-    if (deviceId) updateConversation(deviceId, (conversation) => ({ ...conversation, messages: [...conversation.messages, item], lastConnectedAt: new Date().toISOString() }));
+    if (deviceId) updateConversation(deviceId, (conversation) => ({ ...conversation, messages: [...conversation.messages.filter((message) => message.id !== item.id), item], lastConnectedAt: new Date().toISOString() }));
   };
 
   const handlePeerId = (peerId: string) => {
@@ -55,7 +55,7 @@ export default function App() {
   const refresh = async () => { try { setError(''); const pairing = await createPairing(deviceId); setPairingCode(pairing.code); } catch { setError('配对服务暂不可用，请确认 Go 服务已启动。'); } };
   useEffect(() => { void refresh(); void getRelayLimit().then((data) => setRelayLimit(data.relayMaxFileSize)).catch(() => undefined); }, []);
   useEffect(() => {
-    const instance = new PeerTransport(deviceId, nickname, { onOpen: () => { setConnected(true); setView('transfer'); }, onClose: () => setConnected(false), onTransfer: addTransfer, onPeerId: handlePeerId, onPeerName: (name) => { const peerId = activePeerRef.current; if (peerId) updateConversation(peerId, (conversation) => ({ ...conversation, nickname: name })); }, onError: setError });
+    const instance = new PeerTransport(deviceId, nickname, { onOpen: () => { setConnected(true); setView('transfer'); }, onClose: () => setConnected(false), onTransfer: addTransfer, onFileProgress: addTransfer, onPeerId: handlePeerId, onPeerName: (name) => { const peerId = activePeerRef.current; if (peerId) updateConversation(peerId, (conversation) => ({ ...conversation, nickname: name })); }, onError: setError });
     instance.connectSignaling(); setTransport(instance); return () => instance.close();
   }, [deviceId]);
   useEffect(() => { const code = new URLSearchParams(location.search).get('code'); if (code?.length === 4) { setJoinCode(code); autoJoinCode.current = code; } }, []);

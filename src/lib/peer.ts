@@ -3,8 +3,8 @@ const FILE_CHUNK_SIZE = 64 * 1024;
 const SIGNAL_TYPE = { offer: 'offer', answer: 'answer', candidate: 'candidate' } as const;
 const DATA_TYPE = { profile: 'profile', text: 'text', fileStart: 'file-start', fileEnd: 'file-end' } as const;
 
-export type IncomingTransfer = { id: string; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; direction: 'incoming' | 'outgoing'; text?: string };
-type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onPeerName: (name: string) => void; onPeerId: (deviceId: string) => void; onError: (message: string) => void };
+export type IncomingTransfer = { id: string; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; direction: 'incoming' | 'outgoing'; text?: string; progress?: number };
+type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onFileProgress: (item: IncomingTransfer) => void; onPeerName: (name: string) => void; onPeerId: (deviceId: string) => void; onError: (message: string) => void };
 type Signal = { from: string; type: string; payload: RTCSessionDescriptionInit | RTCIceCandidateInit };
 type ReceivedFile = { id: string; name: string; size: number; mime: string; chunks: ArrayBuffer[] };
 
@@ -49,13 +49,18 @@ export class PeerTransport {
 
   sendText(text: string) { this.sendJson({ type: DATA_TYPE.text, text, sentAt: new Date().toISOString() }); }
 
-  async sendFile(file: File) {
+  async sendFile(file: File, objectUrl?: string) {
     if (!this.channel || this.channel.readyState !== 'open') throw new Error('数据通道尚未连接');
     const id = `${Date.now()}-${file.name}`;
+    const type = file.type.startsWith('image/') ? 'image' : 'file';
+    let sentBytes = 0;
+    this.callbacks.onFileProgress({ id, name: file.name, size: file.size, type, sentAt: new Date().toISOString(), objectUrl, direction: 'outgoing', progress: 0 });
     this.sendJson({ type: DATA_TYPE.fileStart, id, name: file.name, size: file.size, mime: file.type, sentAt: new Date().toISOString() });
     for (let offset = 0; offset < file.size; offset += FILE_CHUNK_SIZE) {
       const buffer = await file.slice(offset, offset + FILE_CHUNK_SIZE).arrayBuffer();
       this.channel.send(buffer);
+      sentBytes += buffer.byteLength;
+      this.callbacks.onFileProgress({ id, name: file.name, size: file.size, type, sentAt: new Date().toISOString(), objectUrl, direction: 'outgoing', progress: sentBytes / file.size });
     }
     this.sendJson({ type: DATA_TYPE.fileEnd, id });
   }
@@ -95,12 +100,12 @@ export class PeerTransport {
   }
 
   private async handleData(data: string | ArrayBuffer | Blob) {
-    if (typeof data !== 'string') { if (!this.receivedFile) return; this.receivedFile.chunks.push(data instanceof Blob ? await data.arrayBuffer() : data); return; }
+    if (typeof data !== 'string') { if (!this.receivedFile) return; const chunk = data instanceof Blob ? await data.arrayBuffer() : data; this.receivedFile.chunks.push(chunk); const loadedBytes = this.receivedFile.chunks.reduce((total, item) => total + item.byteLength, 0); this.callbacks.onFileProgress({ id: this.receivedFile.id, name: this.receivedFile.name, size: this.receivedFile.size, type: this.receivedFile.mime.startsWith('image/') ? 'image' : 'file', sentAt: new Date().toISOString(), direction: 'incoming', progress: Math.min(loadedBytes / this.receivedFile.size, 1) }); return; }
     const message = JSON.parse(data) as Record<string, string | number>;
     if (message.type === DATA_TYPE.profile) { this.callbacks.onPeerName(String(message.nickname)); return; }
     if (message.type === DATA_TYPE.text) { this.callbacks.onTransfer({ id: String(Date.now()), name: '', size: 0, type: 'file', sentAt: String(message.sentAt), direction: 'incoming', text: String(message.text) }); return; }
-    if (message.type === DATA_TYPE.fileStart) { this.receivedFile = { id: String(message.id), name: String(message.name), size: Number(message.size), mime: String(message.mime), chunks: [] }; return; }
-    if (message.type === DATA_TYPE.fileEnd && this.receivedFile) { const file = this.receivedFile; const blob = new Blob(file.chunks, { type: file.mime }); this.callbacks.onTransfer({ id: file.id, name: file.name, size: file.size, type: file.mime.startsWith('image/') ? 'image' : 'file', sentAt: new Date().toISOString(), objectUrl: URL.createObjectURL(blob), direction: 'incoming' }); this.receivedFile = undefined; }
+    if (message.type === DATA_TYPE.fileStart) { this.receivedFile = { id: String(message.id), name: String(message.name), size: Number(message.size), mime: String(message.mime), chunks: [] }; this.callbacks.onFileProgress({ id: this.receivedFile.id, name: this.receivedFile.name, size: this.receivedFile.size, type: this.receivedFile.mime.startsWith('image/') ? 'image' : 'file', sentAt: new Date().toISOString(), direction: 'incoming', progress: 0 }); return; }
+    if (message.type === DATA_TYPE.fileEnd && this.receivedFile) { const file = this.receivedFile; const blob = new Blob(file.chunks, { type: file.mime }); this.callbacks.onTransfer({ id: file.id, name: file.name, size: file.size, type: file.mime.startsWith('image/') ? 'image' : 'file', sentAt: new Date().toISOString(), objectUrl: URL.createObjectURL(blob), direction: 'incoming', progress: 1 }); this.receivedFile = undefined; }
   }
 
   private sendJson(payload: object) { if (this.channel?.readyState === 'open') this.channel.send(JSON.stringify(payload)); }
