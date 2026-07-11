@@ -63,9 +63,9 @@ export class PeerTransport {
 
   sendText(text: string) { this.sendJson({ type: DATA_TYPE.text, text, sentAt: new Date().toISOString() }); }
 
-  async sendFile(file: File, objectUrl?: string) {
+  async sendFile(file: File, objectUrl?: string, transferId?: string) {
     if (!this.channel || this.channel.readyState !== 'open') throw new Error(DATA_CHANNEL_ERROR);
-    const id = `${Date.now()}-${file.name}`;
+    const id = transferId ?? `${Date.now()}-${file.name}`;
     const type = file.type.startsWith('image/') ? 'image' : 'file';
     const sentAt = new Date().toISOString();
     let sentBytes = 0;

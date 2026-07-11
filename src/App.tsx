@@ -15,8 +15,12 @@ import type { Conversation, DeviceProfile, TransferItem, View } from './types';
 const PRESENCE_SYNC_ERROR = '在线状态刷新失败，请确认服务是否可用。';
 const PAIRING_ERROR = '验证码不正确、已过期，或该设备当前不可连接。请确认后重试。';
 const SIGNALING_REQUIRED_ERROR = '直连服务尚未就绪，请稍后重试。';
+const BLOCKED_JOIN_ERROR = '该设备会话已被屏蔽，解除屏蔽后才能连接。';
+const CONNECT_ERROR = '当前无法连接该设备，请稍后重试。';
+const SERVER_ERROR = '配对服务暂不可用，请确认 Go 服务已启动。';
+
 function createConversation(deviceId: string): Conversation {
-  return { deviceId, nickname: DEFAULT_PEER_NICKNAME, avatar: DEFAULT_PEER_AVATAR, online: false, messages: [], lastConnectedAt: new Date().toISOString() };
+  return { deviceId, nickname: DEFAULT_PEER_NICKNAME, avatar: DEFAULT_PEER_AVATAR, online: false, blocked: false, messages: [], lastConnectedAt: new Date().toISOString() };
 }
 
 export default function App() {
@@ -49,6 +53,8 @@ export default function App() {
     });
   };
 
+  const findConversation = (targetDeviceId: string) => conversationsRef.current.find((conversation) => conversation.deviceId === targetDeviceId);
+
   const setPeerOnline = (targetDeviceId: string, online: boolean) => {
     updateConversation(targetDeviceId, (conversation) => ({ ...conversation, online }));
   };
@@ -71,11 +77,12 @@ export default function App() {
   };
 
   const syncPresence = async () => {
-    const deviceIds = conversationsRef.current.map((conversation) => conversation.deviceId);
+    const deviceIds = conversationsRef.current.filter((conversation) => !conversation.blocked).map((conversation) => conversation.deviceId);
     if (deviceIds.length === 0) return;
     try {
       const response = await getPresence(deviceIds);
       setConversations((current) => current.map((conversation) => {
+        if (conversation.blocked) return { ...conversation, online: false };
         const nextPresence = response.devices.find((device) => device.deviceId === conversation.deviceId);
         return nextPresence ? { ...conversation, online: nextPresence.online } : conversation;
       }));
@@ -87,18 +94,18 @@ export default function App() {
   useEffect(() => { saveConversations(conversations); }, [conversations]);
   useEffect(() => { conversationsRef.current = conversations; }, [conversations]);
 
-  const refresh = async () => {
+  const refreshPairingCode = async (forceRefresh = false) => {
     try {
       setError('');
-      const pairing = await createPairing(deviceId);
+      const pairing = await createPairing(deviceId, forceRefresh);
       setPairingCode(pairing.code);
     } catch {
-      setError('配对服务暂不可用，请确认 Go 服务已启动。');
+      setError(SERVER_ERROR);
     }
   };
 
   useEffect(() => {
-    void refresh();
+    void refreshPairingCode();
     void getRelayLimit().then((data) => setRelayLimit(data.relayMaxFileSize)).catch(() => undefined);
   }, []);
 
@@ -161,6 +168,10 @@ export default function App() {
       setError(SIGNALING_REQUIRED_ERROR);
       return;
     }
+    if (findConversation(peerDeviceId)?.blocked) {
+      setError(BLOCKED_JOIN_ERROR);
+      return;
+    }
     if (transport.isConnectedTo(peerDeviceId)) {
       activePeerRef.current = peerDeviceId;
       setSelectedDeviceId(peerDeviceId);
@@ -175,7 +186,7 @@ export default function App() {
       setView('transfer');
     } catch {
       setPeerOnline(peerDeviceId, false);
-      setError('当前无法连接该设备，请稍后重试。');
+      setError(CONNECT_ERROR);
     } finally {
       setBusy(false);
     }
@@ -187,6 +198,10 @@ export default function App() {
     setError('');
     try {
       const result = await exchangePairing(code, deviceId);
+      if (findConversation(result.peerDeviceId)?.blocked) {
+        setPairingError(BLOCKED_JOIN_ERROR);
+        return;
+      }
       await transport.start(result.peerDeviceId);
       setView('transfer');
     } catch {
@@ -217,11 +232,37 @@ export default function App() {
     setAvatar(nextAvatar);
   };
 
+  const deleteConversation = () => {
+    if (!selectedDeviceId) return;
+    const nextSelectedId = conversations.find((conversation) => conversation.deviceId !== selectedDeviceId)?.deviceId ?? null;
+    setConversations((current) => current.filter((conversation) => conversation.deviceId !== selectedDeviceId));
+    if (activePeerRef.current === selectedDeviceId) {
+      activePeerRef.current = null;
+      setConnected(false);
+      transport?.disconnectPeer();
+    }
+    setSelectedDeviceId(nextSelectedId);
+    setView(nextSelectedId ? 'transfer' : 'connect');
+  };
+
+  const toggleBlockedConversation = () => {
+    if (!selectedDeviceId) return;
+    updateConversation(selectedDeviceId, (conversation) => {
+      const blocked = !conversation.blocked;
+      if (blocked && activePeerRef.current === selectedDeviceId) {
+        activePeerRef.current = null;
+        setConnected(false);
+        transport?.disconnectPeer();
+      }
+      return { ...conversation, blocked, online: blocked ? false : conversation.online };
+    });
+  };
+
   const selectedConversation = conversations.find((conversation) => conversation.deviceId === selectedDeviceId);
   const selectedMessages = selectedConversation?.messages ?? [];
-  const isSelectedConnected = Boolean(selectedDeviceId && connected && activePeerRef.current === selectedDeviceId);
+  const isSelectedConnected = Boolean(selectedDeviceId && connected && activePeerRef.current === selectedDeviceId && !selectedConversation?.blocked);
   const qrValue = `${location.origin}?code=${pairingCode}`;
   const invitationText = `邀请您使用柚子快传：${qrValue}`;
 
-  return <div className="app-shell"><header><Brand /><div className="header-meta"><ShieldCheck size={17} /> 不登录 · 不存文件 · 不留记录</div></header><div className="app-body"><Sidebar conversations={conversations} activeDeviceId={selectedDeviceId} onConnect={() => setView('connect')} onSelect={(targetDeviceId) => { setSelectedDeviceId(targetDeviceId); setView('transfer'); const targetConversation = conversations.find((conversation) => conversation.deviceId === targetDeviceId); if (targetConversation?.online) void connectToPeer(targetDeviceId); }} />{view === 'connect' ? <main className="connect-view"><div className="view-heading"><span className="eyebrow"><BadgeCheck size={17} /> 安全直连</span><h1>连接新设备</h1><p>在手机上打开柚子快传，扫描二维码或输入验证码连接</p></div><ConnectionPanel pairingCode={pairingCode} qrValue={qrValue} invitationText={invitationText} joinCode={joinCode} onJoinCodeChange={setJoinCode} onJoin={() => void join()} onRefresh={() => void refresh()} busy={busy} />{error && <div className="error-banner">{error}</div>}<div className="privacy-banner"><ShieldCheck size={20} /><span><strong>无痕传输</strong> · 文件优先在设备间直连，不保存至服务器</span></div></main> : <TransferWorkspace nickname={selectedConversation?.nickname ?? DEFAULT_PEER_NICKNAME} avatar={selectedConversation?.avatar ?? DEFAULT_PEER_AVATAR} selfNickname={nickname} selfAvatar={avatar} onNicknameChange={changeNickname} onAvatarChange={changeAvatar} relayLimit={relayLimit} transport={transport} connected={isSelectedConnected} items={selectedMessages} onItemsChange={(next) => { if (!selectedDeviceId) return; updateConversation(selectedDeviceId, (conversation) => ({ ...conversation, messages: typeof next === 'function' ? next(conversation.messages) : next })); }} />} </div><footer><span>设备 ID：{deviceId.slice(0, 8)}</span><span><Monitor size={15} /> 当前设备已就绪</span><span><ShieldCheck size={16} /> 无痕模式已开启</span></footer>{pairingError && <ErrorDialog message={pairingError} onClose={() => setPairingError('')} />}</div>;
+  return <div className="app-shell"><header><Brand /><div className="header-meta"><ShieldCheck size={17} /> 不登录 · 不存文件 · 不留记录</div></header><div className="app-body"><Sidebar conversations={conversations} activeDeviceId={selectedDeviceId} onConnect={() => setView('connect')} onSelect={(targetDeviceId) => { setSelectedDeviceId(targetDeviceId); setView('transfer'); const targetConversation = conversations.find((conversation) => conversation.deviceId === targetDeviceId); if (targetConversation?.online && !targetConversation.blocked) void connectToPeer(targetDeviceId); }} />{view === 'connect' ? <main className="connect-view"><div className="view-heading"><span className="eyebrow"><BadgeCheck size={17} /> 安全直连</span><h1>连接新设备</h1><p>在手机上打开柚子快传，扫描二维码或输入验证码连接</p></div><ConnectionPanel pairingCode={pairingCode} qrValue={qrValue} invitationText={invitationText} joinCode={joinCode} onJoinCodeChange={setJoinCode} onJoin={() => void join()} onRefresh={() => void refreshPairingCode(true)} busy={busy} />{error && <div className="error-banner">{error}</div>}<div className="privacy-banner"><ShieldCheck size={20} /><span><strong>无痕传输</strong> · 文件优先在设备间直连，不保存至服务器</span></div></main> : <TransferWorkspace nickname={selectedConversation?.nickname ?? DEFAULT_PEER_NICKNAME} avatar={selectedConversation?.avatar ?? DEFAULT_PEER_AVATAR} selfNickname={nickname} selfAvatar={avatar} blocked={selectedConversation?.blocked ?? false} onNicknameChange={changeNickname} onAvatarChange={changeAvatar} onDeleteConversation={deleteConversation} onToggleBlocked={toggleBlockedConversation} relayLimit={relayLimit} transport={transport} connected={isSelectedConnected} items={selectedMessages} onItemsChange={(next) => { if (!selectedDeviceId) return; updateConversation(selectedDeviceId, (conversation) => ({ ...conversation, messages: typeof next === 'function' ? next(conversation.messages) : next })); }} />} </div><footer><span>设备 ID：{deviceId.slice(0, 8)}</span><span><Monitor size={15} /> 当前设备已就绪</span><span><ShieldCheck size={16} /> 无痕模式已开启</span></footer>{pairingError && <ErrorDialog message={pairingError} onClose={() => setPairingError('')} />}</div>;
 }

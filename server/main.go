@@ -16,7 +16,7 @@ import (
 const (
 	apiPrefix        = "/api/"
 	codeLength       = 4
-	codeLifetime     = 3 * time.Minute
+	codeLifetime     = 100 * 365 * 24 * time.Hour
 	relayMaxFileSize = 20 * 1024 * 1024
 )
 
@@ -44,8 +44,9 @@ type exchangeResponse struct {
 }
 type store struct {
 	sync.Mutex
-	pairs   map[string]pairing
-	clients map[string]*websocket.Conn
+	pairs       map[string]pairing
+	deviceCodes map[string]string
+	clients     map[string]*websocket.Conn
 }
 
 type signalMessage struct {
@@ -57,7 +58,7 @@ type signalMessage struct {
 var wsUpgrader = websocket.Upgrader{CheckOrigin: func(_ *http.Request) bool { return true }}
 
 func main() {
-	data := &store{pairs: make(map[string]pairing), clients: make(map[string]*websocket.Conn)}
+	data := &store{pairs: make(map[string]pairing), deviceCodes: make(map[string]string), clients: make(map[string]*websocket.Conn)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/config", cors(func(w http.ResponseWriter, r *http.Request) {
 		respond(w, map[string]int64{"relayMaxFileSize": relayMaxFileSize})
@@ -119,7 +120,8 @@ func (s *store) createPairing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		DeviceID string `json:"deviceId"`
+		DeviceID     string `json:"deviceId"`
+		ForceRefresh bool   `json:"forceRefresh"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || strings.TrimSpace(input.DeviceID) == "" {
 		http.Error(w, "deviceId is required", http.StatusBadRequest)
@@ -127,14 +129,16 @@ func (s *store) createPairing(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Lock()
 	defer s.Unlock()
-	now := time.Now()
-	for code, entry := range s.pairs {
-		if now.After(entry.ExpiresAt) {
-			delete(s.pairs, code)
-		}
+	if existingCode, ok := s.deviceCodes[input.DeviceID]; ok && !input.ForceRefresh {
+		respond(w, pairingResponse{Code: existingCode, ExpiresAt: s.pairs[existingCode].ExpiresAt})
+		return
+	}
+	if previousCode, ok := s.deviceCodes[input.DeviceID]; ok {
+		delete(s.pairs, previousCode)
 	}
 	code := s.newCode()
-	expiration := now.Add(codeLifetime)
+	expiration := time.Now().Add(codeLifetime)
+	s.deviceCodes[input.DeviceID] = code
 	s.pairs[code] = pairing{DeviceID: input.DeviceID, ExpiresAt: expiration}
 	respond(w, pairingResponse{Code: code, ExpiresAt: expiration})
 }
@@ -152,11 +156,10 @@ func (s *store) exchange(w http.ResponseWriter, r *http.Request) {
 	s.Lock()
 	defer s.Unlock()
 	entry, ok := s.pairs[input.Code]
-	if !ok || time.Now().After(entry.ExpiresAt) {
+	if !ok {
 		http.Error(w, "pairing code expired or unavailable", http.StatusNotFound)
 		return
 	}
-	delete(s.pairs, input.Code)
 	if entry.DeviceID == input.DeviceID {
 		http.Error(w, "cannot pair the same device", http.StatusBadRequest)
 		return

@@ -13,6 +13,7 @@ export function loadConversations(): Conversation[] {
       nickname: conversation.nickname ?? DEFAULT_PEER_NICKNAME,
       avatar: conversation.avatar ?? DEFAULT_PEER_AVATAR,
       online: conversation.online ?? false,
+      blocked: conversation.blocked ?? false,
       messages: (conversation.messages ?? []).map((message) => restoreTransferItem(message)),
       lastConnectedAt: conversation.lastConnectedAt ?? new Date().toISOString(),
     }));
