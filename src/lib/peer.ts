@@ -4,7 +4,7 @@ const SIGNAL_TYPE = { offer: 'offer', answer: 'answer', candidate: 'candidate' }
 const DATA_TYPE = { profile: 'profile', text: 'text', fileStart: 'file-start', fileEnd: 'file-end' } as const;
 
 export type IncomingTransfer = { id: string; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; direction: 'incoming' | 'outgoing'; text?: string };
-type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onPeerName: (name: string) => void; onError: (message: string) => void };
+type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onPeerName: (name: string) => void; onPeerId: (deviceId: string) => void; onError: (message: string) => void };
 type Signal = { from: string; type: string; payload: RTCSessionDescriptionInit | RTCIceCandidateInit };
 type ReceivedFile = { id: string; name: string; size: number; mime: string; chunks: ArrayBuffer[] };
 
@@ -33,6 +33,7 @@ export class PeerTransport {
   async start(peerId: string) {
     await this.signalingReady;
     this.peerId = peerId;
+    this.callbacks.onPeerId(peerId);
     const peer = this.createPeer();
     this.channel = peer.createDataChannel(DATA_CHANNEL_NAME, { ordered: true });
     this.bindChannel(this.channel);
@@ -72,6 +73,7 @@ export class PeerTransport {
 
   private async handleSignal(signal: Signal) {
     this.peerId = signal.from;
+    this.callbacks.onPeerId(signal.from);
     if (signal.type === SIGNAL_TYPE.offer) {
       const peer = this.createPeer();
       await peer.setRemoteDescription(signal.payload as RTCSessionDescriptionInit);

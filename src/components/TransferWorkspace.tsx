@@ -1,9 +1,10 @@
 import { File, FolderOpen, Image, Paperclip, Pencil, Send, Smile, Wifi, WifiOff } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { createId } from '../lib/id';
-import type { PeerTransport, IncomingTransfer } from '../lib/peer';
+import type { PeerTransport } from '../lib/peer';
+import type { TransferItem } from '../types';
 
-type Props = { nickname: string; onNicknameChange: (name: string) => void; relayLimit: number; transport?: PeerTransport; connected: boolean; items: IncomingTransfer[]; onItemsChange: (items: IncomingTransfer[] | ((current: IncomingTransfer[]) => IncomingTransfer[])) => void };
+type Props = { nickname: string; onNicknameChange: (name: string) => void; relayLimit: number; transport?: PeerTransport; connected: boolean; items: TransferItem[]; onItemsChange: (items: TransferItem[] | ((current: TransferItem[]) => TransferItem[])) => void };
 const MEBIBYTE = 1024 * 1024;
 const formatSize = (size: number) => size < MEBIBYTE ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / MEBIBYTE).toFixed(1)} MB`;
 const time = () => new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
@@ -12,7 +13,7 @@ export function TransferWorkspace({ nickname, onNicknameChange, relayLimit, tran
   const [message, setMessage] = useState('');
   const [notice, setNotice] = useState('');
   const input = useRef<HTMLInputElement>(null);
-  const append = (item: IncomingTransfer) => onItemsChange((current) => [...current, item]);
+  const append = (item: TransferItem) => onItemsChange((current) => [...current, item]);
   const sendText = () => { const text = message.trim(); if (!text || !connected || !transport) return; transport.sendText(text); append({ id: createId(), name: '', size: 0, type: 'file', sentAt: new Date().toISOString(), direction: 'outgoing', text }); setMessage(''); };
   const addFiles = async (selected: FileList | null) => {
     if (!selected || !transport || !connected) return;
