@@ -76,7 +76,6 @@ export default function App() {
   const autoJoinRetryTimer = useRef<number | undefined>(undefined);
   const autoJoinInProgress = useRef(false);
   const networkRecoveryTimer = useRef<number | undefined>(undefined);
-  const reconnectingPeerRef = useRef<string | null>(null);
   const conversationsRef = useRef(conversations);
   const incomingConnectionRef = useRef(false);
 
@@ -190,13 +189,15 @@ export default function App() {
         setRelayActive(false);
         const peerDeviceId = activePeerRef.current;
         if (peerDeviceId) setPeerOnline(peerDeviceId, false);
-        void syncPresence();
       },
       onTransfer: addTransfer,
       onFileProgress: addTransfer,
       onPeerId: handlePeerId,
       onPresence: (peerDeviceId, online) => {
-        if (peerDeviceId !== deviceId && findConversation(peerDeviceId)) setPeerOnline(peerDeviceId, online);
+        if (peerDeviceId === deviceId || !findConversation(peerDeviceId)) return;
+        setPeerOnline(peerDeviceId, online);
+        if (!online || activePeerRef.current !== peerDeviceId || findConversation(peerDeviceId)?.blocked || instance.isConnectedTo(peerDeviceId)) return;
+        void instance.start(peerDeviceId).catch(() => setPeerOnline(peerDeviceId, false));
       },
       onPeerProfile: (nextProfile) => {
         const peerDeviceId = activePeerRef.current;
@@ -288,16 +289,6 @@ export default function App() {
       setBusy(false);
     }
   };
-
-  useEffect(() => {
-    if (!selectedDeviceId || !transport || connected) return;
-    const conversation = conversations.find((item) => item.deviceId === selectedDeviceId);
-    if (!conversation?.online || conversation.blocked || reconnectingPeerRef.current === selectedDeviceId) return;
-    reconnectingPeerRef.current = selectedDeviceId;
-    void connectToPeer(selectedDeviceId).finally(() => {
-      reconnectingPeerRef.current = null;
-    });
-  }, [connected, conversations, selectedDeviceId, transport]);
 
   const join = async (code = joinCode, options: JoinOptions = {}): Promise<JoinResult> => {
     if (!transport) return 'signaling-unavailable';

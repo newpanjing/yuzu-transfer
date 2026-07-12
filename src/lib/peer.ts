@@ -12,6 +12,7 @@ const DATA_CHANNEL_NAME = 'yuzu-transfer';
 const SIGNAL_TYPE = { offer: 'offer', answer: 'answer', candidate: 'candidate', presence: 'presence', presenceWatch: 'presence-watch' } as const;
 const DATA_TYPE = { profile: 'profile', text: 'text', fileStart: 'file-start', fileProgress: 'file-progress', fileEnd: 'file-end', filePause: 'file-pause', fileResume: 'file-resume', fileCancel: 'file-cancel' } as const;
 const CONNECTION_STATE = { failed: 'failed', disconnected: 'disconnected', closed: 'closed' } as const;
+const PENDING_CONNECTION_STATE = { new: 'new', connecting: 'connecting' } as const;
 const CANDIDATE_PAIR_TYPE = 'candidate-pair';
 const TRANSPORT_STAT_TYPE = 'transport';
 const RELAY_CANDIDATE_TYPE = 'relay';
@@ -248,7 +249,7 @@ export class PeerTransport {
   }
 
   isConnectingTo(deviceId: string) {
-    return this.peerId === deviceId && Boolean(this.peer) && this.channel?.readyState !== 'open';
+    return this.peerId === deviceId && (this.peer?.connectionState === PENDING_CONNECTION_STATE.new || this.peer?.connectionState === PENDING_CONNECTION_STATE.connecting);
   }
 
   disconnectPeer() {
