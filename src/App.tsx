@@ -187,10 +187,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const code = new URLSearchParams(location.search).get('code');
+    const url = new URL(window.location.href);
+    const code = url.searchParams.get('code');
     if (code?.length === 4) {
       setJoinCode(code);
       autoJoinCode.current = code;
+      url.searchParams.delete('code');
+      const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+      window.history.replaceState({}, '', nextUrl);
     }
   }, []);
 
