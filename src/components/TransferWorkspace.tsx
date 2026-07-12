@@ -36,8 +36,11 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
   const [isDragging, setIsDragging] = useState(false);
   const [preview, setPreview] = useState<TransferItem>();
   const [pendingSave, setPendingSave] = useState<TransferItem>();
+  const [animatedItemId, setAnimatedItemId] = useState('');
   const input = useRef<HTMLInputElement>(null);
   const promptedFiles = useRef(new Set<string>());
+  const messageAreaRef = useRef<HTMLElement>(null);
+  const latestItemIdRef = useRef('');
 
   useEffect(() => {
     const received = items.find((item) => item.direction === 'incoming' && item.objectUrl && item.progress === 1 && !promptedFiles.current.has(item.id));
@@ -45,6 +48,19 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
       promptedFiles.current.add(received.id);
       setPendingSave(received);
     }
+  }, [items]);
+
+  useEffect(() => {
+    const latestItem = items.at(-1);
+    if (!latestItem || latestItem.id === latestItemIdRef.current) return;
+    latestItemIdRef.current = latestItem.id;
+    messageAreaRef.current?.scrollTo({ top: messageAreaRef.current.scrollHeight, behavior: 'smooth' });
+    if (latestItem.direction !== 'incoming') return;
+    setAnimatedItemId(latestItem.id);
+    const timer = window.setTimeout(() => {
+      setAnimatedItemId((current) => current === latestItem.id ? '' : current);
+    }, 520);
+    return () => window.clearTimeout(timer);
   }, [items]);
 
   useEffect(() => {
@@ -113,6 +129,7 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
       </section>
 
       <section
+        ref={messageAreaRef}
         className={isDragging ? 'message-area dragging' : 'message-area'}
         onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }}
         onDragLeave={(event) => { if (event.currentTarget === event.target) setIsDragging(false); }}
@@ -128,9 +145,9 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
         )}
         <div className="message-list">
           {items.map((item) => item.text ? (
-            <article className={`text-message ${item.direction}`} key={item.id}>{item.text}</article>
+            <article className={`text-message ${item.direction} ${animatedItemId === item.id ? 'message-pop' : ''}`} key={item.id}>{item.text}</article>
           ) : (
-            <article className={`file-message ${item.direction} ${item.expired ? 'file-message expired' : ''}`} key={item.id}>
+            <article className={`file-message ${item.direction} ${item.expired ? 'file-message expired' : ''} ${animatedItemId === item.id ? 'message-pop' : ''}`} key={item.id}>
               {item.objectUrl && item.type === 'image' ? (
                 <button className="image-thumbnail" onClick={() => setPreview(item)}>
                   <img src={item.objectUrl} alt={item.name} />
