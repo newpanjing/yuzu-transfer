@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { BadgeCheck } from 'lucide-react';
 import { AboutView } from './components/AboutView';
 import { Brand } from './components/Brand';
@@ -12,7 +12,7 @@ import { Sidebar } from './components/Sidebar';
 import { Toast } from './components/Toast';
 import { TransferWorkspace } from './components/TransferWorkspace';
 import { TutorialView } from './components/TutorialView';
-import { DEFAULT_ICE_SERVERS, DEFAULT_PEER_AVATAR, DEFAULT_PEER_NICKNAME, DEFAULT_RELAY_LIMIT, PRESENCE_REFRESH_MS } from './constants';
+import { DEFAULT_ICE_SERVERS, DEFAULT_PEER_AVATAR, DEFAULT_PEER_NICKNAME, DEFAULT_RELAY_LIMIT } from './constants';
 import { createPairing, exchangePairing, getPresence, getRtcConfig } from './lib/api';
 import { loadConversations, saveConversations } from './lib/conversations';
 import { getAvatar, getDeviceId, getNickname, getStoredPairingCode, saveAvatar, saveNickname, savePairingCode } from './lib/device';
@@ -76,10 +76,13 @@ export default function App() {
   const autoJoinRetryTimer = useRef<number | undefined>(undefined);
   const autoJoinInProgress = useRef(false);
   const networkRecoveryTimer = useRef<number | undefined>(undefined);
+  const reconnectingPeerRef = useRef<string | null>(null);
   const conversationsRef = useRef(conversations);
   const incomingConnectionRef = useRef(false);
 
   const profile: DeviceProfile = { nickname, avatar };
+  const presenceDeviceIds = useMemo(() => conversations.filter((conversation) => !conversation.blocked).map((conversation) => conversation.deviceId).sort(), [conversations]);
+  const presenceSubscriptionKey = presenceDeviceIds.join(',');
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(max-width: 760px)');
@@ -187,10 +190,14 @@ export default function App() {
         setRelayActive(false);
         const peerDeviceId = activePeerRef.current;
         if (peerDeviceId) setPeerOnline(peerDeviceId, false);
+        void syncPresence();
       },
       onTransfer: addTransfer,
       onFileProgress: addTransfer,
       onPeerId: handlePeerId,
+      onPresence: (peerDeviceId, online) => {
+        if (peerDeviceId !== deviceId && findConversation(peerDeviceId)) setPeerOnline(peerDeviceId, online);
+      },
       onPeerProfile: (nextProfile) => {
         const peerDeviceId = activePeerRef.current;
         if (!peerDeviceId) return;
@@ -220,6 +227,10 @@ export default function App() {
   }, [avatar, nickname, transport]);
 
   useEffect(() => {
+    transport?.watchPresence(presenceDeviceIds);
+  }, [presenceSubscriptionKey, transport]);
+
+  useEffect(() => {
     void syncPresence();
   }, [conversations.length]);
 
@@ -227,11 +238,6 @@ export default function App() {
     if (selectedDeviceId || conversations.length === 0) return;
     setSelectedDeviceId(conversations[0].deviceId);
   }, [conversations, selectedDeviceId]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => { void syncPresence(); }, PRESENCE_REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, []);
 
   useEffect(() => {
     if (!selectedDeviceId) return;
@@ -268,6 +274,7 @@ export default function App() {
       setView('transfer');
       return;
     }
+    if (transport.isConnectingTo(peerDeviceId)) return;
     setBusy(true);
     setError('');
     try {
@@ -281,6 +288,16 @@ export default function App() {
       setBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (!selectedDeviceId || !transport || connected) return;
+    const conversation = conversations.find((item) => item.deviceId === selectedDeviceId);
+    if (!conversation?.online || conversation.blocked || reconnectingPeerRef.current === selectedDeviceId) return;
+    reconnectingPeerRef.current = selectedDeviceId;
+    void connectToPeer(selectedDeviceId).finally(() => {
+      reconnectingPeerRef.current = null;
+    });
+  }, [connected, conversations, selectedDeviceId, transport]);
 
   const join = async (code = joinCode, options: JoinOptions = {}): Promise<JoinResult> => {
     if (!transport) return 'signaling-unavailable';

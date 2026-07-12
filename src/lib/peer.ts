@@ -9,7 +9,7 @@ import { translateNow } from './i18n';
 import { buildSignalingUrl } from './runtime';
 
 const DATA_CHANNEL_NAME = 'yuzu-transfer';
-const SIGNAL_TYPE = { offer: 'offer', answer: 'answer', candidate: 'candidate' } as const;
+const SIGNAL_TYPE = { offer: 'offer', answer: 'answer', candidate: 'candidate', presence: 'presence', presenceWatch: 'presence-watch' } as const;
 const DATA_TYPE = { profile: 'profile', text: 'text', fileStart: 'file-start', fileProgress: 'file-progress', fileEnd: 'file-end', filePause: 'file-pause', fileResume: 'file-resume', fileCancel: 'file-cancel' } as const;
 const CONNECTION_STATE = { failed: 'failed', disconnected: 'disconnected', closed: 'closed' } as const;
 const CANDIDATE_PAIR_TYPE = 'candidate-pair';
@@ -21,8 +21,9 @@ const SIGNALING_ERROR = () => translateNow('peer.signaling');
 const DATA_CHANNEL_ERROR = () => translateNow('peer.dataChannel');
 
 export type IncomingTransfer = { id: string; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; direction: 'incoming' | 'outgoing'; text?: string; progress?: number; transferredBytes?: number; speedBytes?: number; remainingSeconds?: number; elapsedSeconds?: number; transferStatus?: TransferStatus };
-type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onFileProgress: (item: IncomingTransfer) => void; onPeerProfile: (profile: DeviceProfile) => void; onPeerId: (deviceId: string) => void; onIncomingConnection: () => void; onRelayChange: (relayActive: boolean) => void; onError: (message: string) => void };
-type Signal = { from: string; type: string; payload: RTCSessionDescriptionInit | RTCIceCandidateInit };
+type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onFileProgress: (item: IncomingTransfer) => void; onPeerProfile: (profile: DeviceProfile) => void; onPeerId: (deviceId: string) => void; onPresence: (deviceId: string, online: boolean) => void; onIncomingConnection: () => void; onRelayChange: (relayActive: boolean) => void; onError: (message: string) => void };
+type PresenceSignal = { deviceId?: unknown; online?: unknown };
+type Signal = { from?: string; type: string; payload: unknown };
 type ReceivedFile = { id: string; name: string; size: number; mime: string; chunks: ArrayBuffer[]; sentAt: string; startedAt: number; transferredBytes: number; transferStatus: TransferStatus };
 type OutgoingTransfer = { id: string; file: File; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; startedAt: number; transferredBytes: number; transferStatus: TransferStatus; resume?: () => void };
 type CandidateReport = RTCStats & { candidateType?: string };
@@ -55,6 +56,7 @@ export class PeerTransport {
   private outgoingQueue: OutgoingTransfer[] = [];
   private activeOutgoingTransfer?: OutgoingTransfer;
   private processingOutgoingQueue = false;
+  private presenceDeviceIds: string[] = [];
 
   constructor(private readonly deviceId: string, profile: DeviceProfile, private readonly callbacks: Callbacks, private readonly iceServers: RTCIceServer[]) {
     this.profile = profile;
@@ -66,6 +68,11 @@ export class PeerTransport {
 
   reconnectSignaling() {
     this.openSignalingSocket(true);
+  }
+
+  watchPresence(deviceIds: string[]) {
+    this.presenceDeviceIds = [...new Set(deviceIds)];
+    this.sendPresenceSubscription();
   }
 
   async waitForSignalingReady() {
@@ -240,6 +247,10 @@ export class PeerTransport {
     return this.peerId === deviceId && this.channel?.readyState === 'open';
   }
 
+  isConnectingTo(deviceId: string) {
+    return this.peerId === deviceId && Boolean(this.peer) && this.channel?.readyState !== 'open';
+  }
+
   disconnectPeer() {
     this.stopTransportStats();
     this.updateRelayState(false);
@@ -279,7 +290,10 @@ export class PeerTransport {
     const socket = new WebSocket(buildSignalingUrl(this.deviceId));
     this.socket = socket;
     this.signalingReady = new Promise((resolve) => {
-      socket.onopen = () => resolve();
+      socket.onopen = () => {
+        this.sendPresenceSubscription();
+        resolve();
+      };
       socket.onerror = () => {
         this.signalingFailed = true;
         resolve();
@@ -410,6 +424,12 @@ export class PeerTransport {
   }
 
   private async handleSignal(signal: Signal) {
+    if (signal.type === SIGNAL_TYPE.presence) {
+      const presence = signal.payload as PresenceSignal;
+      if (typeof presence.deviceId === 'string' && typeof presence.online === 'boolean') this.callbacks.onPresence(presence.deviceId, presence.online);
+      return;
+    }
+    if (!signal.from) return;
     this.peerId = signal.from;
     this.callbacks.onPeerId(signal.from);
     if (signal.type === SIGNAL_TYPE.offer) {
@@ -496,5 +516,10 @@ export class PeerTransport {
 
   private sendSignal(type: string, payload: RTCSessionDescriptionInit | RTCIceCandidateInit) {
     if (this.socket?.readyState === WebSocket.OPEN && this.peerId) this.socket.send(JSON.stringify({ to: this.peerId, type, payload }));
+  }
+
+  private sendPresenceSubscription() {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify({ type: SIGNAL_TYPE.presenceWatch, payload: { deviceIds: this.presenceDeviceIds } }));
   }
 }

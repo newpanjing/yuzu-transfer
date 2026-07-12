@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	codeLength   = 4
-	codeLifetime = 100 * 365 * 24 * time.Hour
+	codeLength              = 4
+	codeLifetime            = 100 * 365 * 24 * time.Hour
+	signalTypePresence      = "presence"
+	signalTypePresenceWatch = "presence-watch"
 )
 
 type pairing struct {
@@ -51,20 +53,39 @@ type signalMessage struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
+type presenceWatchRequest struct {
+	DeviceIDs []string `json:"deviceIds"`
+}
+
+type signalingClient struct {
+	connection *websocket.Conn
+	writeMutex sync.Mutex
+}
+
+func (client *signalingClient) WriteJSON(payload any) error {
+	client.writeMutex.Lock()
+	defer client.writeMutex.Unlock()
+	return client.connection.WriteJSON(payload)
+}
+
 type Store struct {
 	sync.Mutex
-	pairs       map[string]pairing
-	deviceCodes map[string]string
-	clients     map[string]*websocket.Conn
+	pairs                 map[string]pairing
+	deviceCodes           map[string]string
+	clients               map[string]*signalingClient
+	presenceTargets       map[string]map[string]struct{}
+	presenceSubscriptions map[string]map[string]struct{}
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(_ *http.Request) bool { return true }}
 
 func New() *Store {
 	return &Store{
-		pairs:       make(map[string]pairing),
-		deviceCodes: make(map[string]string),
-		clients:     make(map[string]*websocket.Conn),
+		pairs:                 make(map[string]pairing),
+		deviceCodes:           make(map[string]string),
+		clients:               make(map[string]*signalingClient),
+		presenceTargets:       make(map[string]map[string]struct{}),
+		presenceSubscriptions: make(map[string]map[string]struct{}),
 	}
 }
 
@@ -78,19 +99,27 @@ func (store *Store) Signal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	client := &signalingClient{connection: connection}
 	store.Lock()
-	if previousConnection := store.clients[deviceID]; previousConnection != nil {
-		_ = previousConnection.Close()
-	}
-	store.clients[deviceID] = connection
+	previousClient := store.clients[deviceID]
+	store.clients[deviceID] = client
 	store.Unlock()
+	if previousClient != nil {
+		_ = previousClient.connection.Close()
+	}
+	store.broadcastPresence(deviceID, true)
 	defer func() {
+		removed := false
 		store.Lock()
-		if store.clients[deviceID] == connection {
+		if store.clients[deviceID] == client {
 			delete(store.clients, deviceID)
+			removed = true
 		}
 		store.Unlock()
 		_ = connection.Close()
+		if removed {
+			store.broadcastPresence(deviceID, false)
+		}
 	}()
 
 	for {
@@ -98,16 +127,66 @@ func (store *Store) Signal(w http.ResponseWriter, r *http.Request) {
 		if err := connection.ReadJSON(&message); err != nil {
 			return
 		}
+		if message.Type == signalTypePresenceWatch {
+			var request presenceWatchRequest
+			if json.Unmarshal(message.Payload, &request) == nil {
+				store.setPresenceSubscriptions(deviceID, request.DeviceIDs)
+			}
+			continue
+		}
 		if message.To == "" || message.Type == "" {
 			continue
 		}
 		store.Lock()
-		targetConnection := store.clients[message.To]
+		targetClient := store.clients[message.To]
 		store.Unlock()
-		if targetConnection != nil {
-			_ = targetConnection.WriteJSON(map[string]any{"from": deviceID, "type": message.Type, "payload": message.Payload})
+		if targetClient != nil {
+			_ = targetClient.WriteJSON(map[string]any{"from": deviceID, "type": message.Type, "payload": message.Payload})
 		}
 	}
+}
+
+func (store *Store) broadcastPresence(deviceID string, online bool) {
+	store.Lock()
+	clients := make([]*signalingClient, 0, len(store.presenceTargets[deviceID]))
+	for subscriberID := range store.presenceTargets[deviceID] {
+		if client := store.clients[subscriberID]; client != nil {
+			clients = append(clients, client)
+		}
+	}
+	store.Unlock()
+	payload := map[string]any{"type": signalTypePresence, "payload": devicePresence{DeviceID: deviceID, Online: online}}
+	for _, client := range clients {
+		_ = client.WriteJSON(payload)
+	}
+}
+
+func (store *Store) setPresenceSubscriptions(deviceID string, targetDeviceIDs []string) {
+	store.Lock()
+	defer store.Unlock()
+	for targetDeviceID := range store.presenceSubscriptions[deviceID] {
+		delete(store.presenceTargets[targetDeviceID], deviceID)
+		if len(store.presenceTargets[targetDeviceID]) == 0 {
+			delete(store.presenceTargets, targetDeviceID)
+		}
+	}
+	targets := make(map[string]struct{})
+	for _, targetDeviceID := range targetDeviceIDs {
+		targetDeviceID = strings.TrimSpace(targetDeviceID)
+		if targetDeviceID == "" || targetDeviceID == deviceID {
+			continue
+		}
+		targets[targetDeviceID] = struct{}{}
+		if store.presenceTargets[targetDeviceID] == nil {
+			store.presenceTargets[targetDeviceID] = make(map[string]struct{})
+		}
+		store.presenceTargets[targetDeviceID][deviceID] = struct{}{}
+	}
+	if len(targets) == 0 {
+		delete(store.presenceSubscriptions, deviceID)
+		return
+	}
+	store.presenceSubscriptions[deviceID] = targets
 }
 
 func (store *Store) CreatePairing(w http.ResponseWriter, r *http.Request) {

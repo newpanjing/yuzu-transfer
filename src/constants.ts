@@ -25,7 +25,6 @@ export const LEGACY_AVATAR_ID_MAP = { 柚: 'yuzu-classic', 传: 'yuzu-leaf', 连
 export const DEFAULT_PEER_NICKNAME = '新设备';
 export const DEFAULT_PEER_AVATAR = AVATAR_OPTIONS[0].id;
 export const ONLINE_STATUS_TEXT = { online: '对方在线 · 局域网优先', offline: '对方不在线' } as const;
-export const PRESENCE_REFRESH_MS = 15000;
 
 export function resolveAvatarId(value?: string) {
   if (!value) return DEFAULT_PEER_AVATAR;
