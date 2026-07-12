@@ -14,12 +14,12 @@ type Props = {
 export function MobileBottomNav({ activeView, hasConversations, onConnect, onConversation, onSettings, onAbout }: Props) {
   const { t } = useI18n();
   return (
-    <nav className="mobile-bottom-nav" aria-label={t('header.languageLabel')}>
+    <nav className="mobile-bottom-nav" aria-label={t('nav.conversations')}>
       <button className={activeView === 'connect' ? 'mobile-bottom-nav__item active' : 'mobile-bottom-nav__item'} onClick={onConnect}>
         <Link2 size={18} />
         <span>{t('nav.connect')}</span>
       </button>
-      <button className={activeView === 'transfer' ? 'mobile-bottom-nav__item active' : 'mobile-bottom-nav__item'} onClick={onConversation}>
+      <button className={activeView === 'transfer' || activeView === 'conversations' ? 'mobile-bottom-nav__item active' : 'mobile-bottom-nav__item'} onClick={onConversation}>
         <MessageCircle size={18} />
         <span>{hasConversations ? t('nav.conversations') : t('nav.noConversations')}</span>
       </button>

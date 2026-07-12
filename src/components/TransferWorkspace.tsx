@@ -1,4 +1,4 @@
-import { File, Image, Paperclip, Send } from 'lucide-react';
+import { ArrowLeft, File, Image, Paperclip, Send } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_PEER_AVATAR } from '../constants';
 import { createId } from '../lib/id';
@@ -23,13 +23,14 @@ type Props = {
   connected: boolean;
   items: TransferItem[];
   onItemsChange: (items: TransferItem[] | ((current: TransferItem[]) => TransferItem[])) => void;
+  onBack?: () => void;
 };
 
 const MEBIBYTE = 1024 * 1024;
 const formatSize = (size: number) => size < MEBIBYTE ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / MEBIBYTE).toFixed(1)} MB`;
 const formatSpeed = (speedBytes = 0) => speedBytes < MEBIBYTE ? `${Math.max(1, Math.round(speedBytes / 1024))} KB/s` : `${(speedBytes / MEBIBYTE).toFixed(1)} MB/s`;
 
-export function TransferWorkspace({ title, avatar, blocked, onRenameConversation, onDeleteConversation, onToggleBlocked, relayLimit, transport, connected, items, onItemsChange }: Props) {
+export function TransferWorkspace({ title, avatar, blocked, onRenameConversation, onDeleteConversation, onToggleBlocked, relayLimit, transport, connected, items, onItemsChange, onBack }: Props) {
   const { resolvedLanguage, t } = useI18n();
   const [message, setMessage] = useState('');
   const [notice, setNotice] = useState('');
@@ -120,6 +121,7 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
   return (
     <main className="workspace">
       <section className="peer-panel">
+        {onBack && <button className="chat-back-button" onClick={onBack} aria-label={t('nav.back')}><ArrowLeft size={18} /></button>}
         <AvatarBadge avatarId={avatar || DEFAULT_PEER_AVATAR} online={connected && !blocked} className="peer-avatar" alt={title} />
         <div className="peer-summary">
           <div className="peer-title">{title}</div>
