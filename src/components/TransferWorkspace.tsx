@@ -1,14 +1,16 @@
-import { ArrowLeft, Download, File, Image, Paperclip, Send } from 'lucide-react';
+import { ArrowLeft, CircleHelp, Download, File, Image, Paperclip, Send } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_PEER_AVATAR } from '../constants';
-import { formatMessageTime } from '../lib/date';
+import { DEFAULT_PEER_AVATAR, TRANSFER_STATUS } from '../constants';
+import { formatMessageTime, getMessageTimeGroupKey } from '../lib/date';
 import { createId } from '../lib/id';
 import { useI18n } from '../lib/i18n';
 import { AvatarBadge } from './AvatarBadge';
+import { ConnectionHelpDialog } from './ConnectionHelpDialog';
 import { ConversationMenu } from './ConversationMenu';
 import { saveTransferItem } from './FileSaveDialog';
 import { ImagePreviewDialog } from './ImagePreviewDialog';
 import { Toast } from './Toast';
+import { TransferQueueActions } from './TransferQueueActions';
 import type { PeerTransport } from '../lib/peer';
 import type { TransferItem } from '../types';
 
@@ -22,6 +24,7 @@ type Props = {
   relayActive: boolean;
   transport?: PeerTransport;
   connected: boolean;
+  online: boolean;
   items: TransferItem[];
   onItemsChange: (items: TransferItem[] | ((current: TransferItem[]) => TransferItem[])) => void;
   onBack?: () => void;
@@ -31,17 +34,20 @@ const MEBIBYTE = 1024 * 1024;
 const formatSize = (size: number) => size < MEBIBYTE ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / MEBIBYTE).toFixed(1)} MB`;
 const formatSpeed = (speedBytes = 0) => speedBytes < MEBIBYTE ? `${Math.max(1, Math.round(speedBytes / 1024))} KB/s` : `${(speedBytes / MEBIBYTE).toFixed(1)} MB/s`;
 
-export function TransferWorkspace({ title, avatar, blocked, onDeleteConversation, onToggleBlocked, relayLimit, relayActive, transport, connected, items, onItemsChange, onBack }: Props) {
+export function TransferWorkspace({ title, avatar, blocked, onDeleteConversation, onToggleBlocked, relayLimit, relayActive, transport, connected, online, items, onItemsChange, onBack }: Props) {
   const { resolvedLanguage, t } = useI18n();
   const [message, setMessage] = useState('');
   const [notice, setNotice] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const [preview, setPreview] = useState<TransferItem>();
   const [animatedItemId, setAnimatedItemId] = useState('');
+  const [showConnectionHelp, setShowConnectionHelp] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const messageAreaRef = useRef<HTMLElement>(null);
   const latestItemIdRef = useRef('');
+  const outgoingFilesRef = useRef(new Map<string, File>());
   const composerDisabled = blocked || !connected;
+  const composerPlaceholder = blocked ? t('error.blockedNotice') : !online ? t('workspace.input.offlinePlaceholder') : t('workspace.input.placeholder');
 
   useEffect(() => {
     const latestItem = items.at(-1);
@@ -101,12 +107,40 @@ export function TransferWorkspace({ title, avatar, blocked, onDeleteConversation
       const sentAt = new Date().toISOString();
       const type = file.type.startsWith('image/') ? 'image' : 'file';
       const previewUrl = type === 'image' ? URL.createObjectURL(file) : undefined;
-      append({ id: transferId, name: file.name, size: file.size, type, sentAt, direction: 'outgoing', objectUrl: previewUrl, progress: 0, transferredBytes: 0, speedBytes: 0, remainingSeconds: 0 });
+      outgoingFilesRef.current.set(transferId, file);
+      append({ id: transferId, name: file.name, size: file.size, type, sentAt, direction: 'outgoing', objectUrl: previewUrl, progress: 0, transferredBytes: 0, speedBytes: 0, remainingSeconds: 0, transferStatus: TRANSFER_STATUS.queued });
       try {
-        await transport!.sendFile(file, previewUrl, transferId);
+        transport!.queueFile(file, previewUrl, transferId);
       } catch {
+        onItemsChange((current) => current.map((item) => item.id === transferId ? { ...item, transferStatus: TRANSFER_STATUS.failed } : item));
         setNotice(t('error.fileSend'));
       }
+    }
+  };
+
+  const pauseTransfer = (transferId: string) => {
+    transport?.pauseFile(transferId);
+  };
+
+  const resumeTransfer = (transferId: string) => {
+    transport?.resumeFile(transferId);
+  };
+
+  const cancelTransfer = (transferId: string) => {
+    transport?.cancelFile(transferId);
+  };
+
+  const retryTransfer = (item: TransferItem) => {
+    if (!requirePeerAvailable()) return;
+    const file = outgoingFilesRef.current.get(item.id);
+    if (!file) {
+      setNotice(t('workspace.transfer.sourceExpired'));
+      return;
+    }
+    try {
+      transport!.queueFile(file, item.objectUrl, item.id);
+    } catch {
+      setNotice(t('error.fileSend'));
     }
   };
 
@@ -114,10 +148,18 @@ export function TransferWorkspace({ title, avatar, blocked, onDeleteConversation
     <main className="workspace">
       <section className="peer-panel">
         {onBack && <button className="chat-back-button" onClick={onBack} aria-label={t('nav.back')}><ArrowLeft size={18} /></button>}
-        <AvatarBadge avatarId={avatar || DEFAULT_PEER_AVATAR} online={connected && !blocked} className="peer-avatar" alt={title} />
+        <AvatarBadge avatarId={avatar || DEFAULT_PEER_AVATAR} online={online && !blocked} className="peer-avatar" alt={title} />
         <div className="peer-summary">
           <div className="peer-title">{title}</div>
-          <div className="peer-subtitle">{relayActive ? t('workspace.connection.relay') : t('workspace.connection.p2p')} · {t('workspace.sessionNotice')}</div>
+          <div className="peer-subtitle">
+            <span>{connected ? (relayActive ? t('workspace.connection.relay') : t('workspace.connection.p2p')) : t(online ? 'workspace.presence.online' : 'workspace.presence.offline')}</span>
+            {connected && (
+              <button type="button" className="connection-help-button" onClick={() => setShowConnectionHelp((current) => !current)} aria-label={t('workspace.connection.help')}>
+                <CircleHelp size={14} />
+              </button>
+            )}
+            <span>· {t('workspace.sessionNotice')}</span>
+          </div>
         </div>
         <ConversationMenu onToggleBlocked={onToggleBlocked} onDelete={onDeleteConversation} blocked={blocked} />
       </section>
@@ -138,13 +180,19 @@ export function TransferWorkspace({ title, avatar, blocked, onDeleteConversation
           </div>
         )}
         <div className="message-list">
-          {items.map((item) => item.text ? (
+          {items.map((item, index) => {
+            const previousItem = index > 0 ? items[index - 1] : undefined;
+            const showGroupedTime = getMessageTimeGroupKey(item.sentAt, resolvedLanguage) !== getMessageTimeGroupKey(previousItem?.sentAt ?? '', resolvedLanguage);
+            const transferInProgress = item.progress !== undefined && item.progress < 1 && (!item.transferStatus || item.transferStatus === TRANSFER_STATUS.transferring);
+            const transferProgress = item.progress ?? 0;
+            return item.text ? (
             <div className={`message-entry ${item.direction}`} key={item.id}>
+              {showGroupedTime && <time className="message-entry-time message-entry-time--group">{formatMessageTime(item.sentAt, resolvedLanguage)}</time>}
               <article className={`text-message ${item.direction} ${animatedItemId === item.id ? 'message-pop' : ''}`}>{item.text}</article>
-              <time className="message-entry-time">{formatMessageTime(item.sentAt, resolvedLanguage)}</time>
             </div>
           ) : (
             <div className={`message-entry ${item.direction}`} key={item.id}>
+              {showGroupedTime && <time className="message-entry-time message-entry-time--group">{formatMessageTime(item.sentAt, resolvedLanguage)}</time>}
               <article className={`file-message ${item.direction} ${item.expired ? 'file-message expired' : ''} ${animatedItemId === item.id ? 'message-pop' : ''}`}>
                 {item.objectUrl && item.type === 'image' ? (
                   <button className="image-thumbnail" onClick={() => setPreview(item)}>
@@ -159,18 +207,19 @@ export function TransferWorkspace({ title, avatar, blocked, onDeleteConversation
                   <strong>{item.name}</strong>
                   <small>{formatSize(item.size)}</small>
                   {item.expired && <em className="expired-hint">{item.type === 'image' ? t('workspace.imageExpired') : t('workspace.fileExpired')}</em>}
-                  {item.progress !== undefined && item.progress < 1 && <small className="transfer-meta">{formatSize(item.transferredBytes ?? 0)} / {formatSize(item.size)} · {formatSpeed(item.speedBytes)} · {formatElapsed(item.elapsedSeconds)}</small>}
-                  {item.progress !== undefined && item.progress < 1 && <span className="transfer-progress"><i style={{ width: `${Math.round(item.progress * 100)}%` }} />{Math.round(item.progress * 100)}%</span>}
+                  {item.transferStatus && item.transferStatus !== TRANSFER_STATUS.completed && <small className={`transfer-status transfer-status--${item.transferStatus}`}>{t(`workspace.transfer.${item.transferStatus}` as const)}</small>}
+                  {transferInProgress && <small className="transfer-meta">{formatSize(item.transferredBytes ?? 0)} / {formatSize(item.size)} · {formatSpeed(item.speedBytes)} · {formatElapsed(item.elapsedSeconds)}</small>}
+                  {transferInProgress && <span className="transfer-progress"><i style={{ width: `${Math.round(transferProgress * 100)}%` }} />{Math.round(transferProgress * 100)}%</span>}
                 </span>
+                {item.direction === 'outgoing' && <TransferQueueActions status={item.transferStatus} onPause={() => pauseTransfer(item.id)} onResume={() => resumeTransfer(item.id)} onCancel={() => cancelTransfer(item.id)} onRetry={() => retryTransfer(item)} />}
                 {item.direction === 'incoming' && item.objectUrl && !item.expired && (
                   <button className="attachment-download-button" onClick={() => void saveTransferItem(item)} aria-label={t('workspace.download')}>
                     <Download size={16} />
                   </button>
                 )}
               </article>
-              <time className="message-entry-time">{formatMessageTime(item.sentAt, resolvedLanguage)}</time>
             </div>
-          ))}
+          );})}
         </div>
       </section>
 
@@ -178,13 +227,14 @@ export function TransferWorkspace({ title, avatar, blocked, onDeleteConversation
         <input ref={input} hidden type="file" multiple onChange={(event) => void addFiles(event.target.files)} />
         <div className={composerDisabled ? 'composer-shell composer-shell--disabled' : 'composer-shell'}>
           <button className="icon-button" onClick={() => input.current?.click()} aria-label={t('workspace.pickFile')} disabled={composerDisabled}><Paperclip size={20} /></button>
-          <input value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendText(); }} placeholder={t('workspace.input.placeholder')} disabled={composerDisabled} />
+          <input value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendText(); }} placeholder={composerPlaceholder} disabled={composerDisabled} />
           <button className="send-button" onClick={sendText} aria-label={t('workspace.send')} disabled={composerDisabled}><Send size={16} /></button>
         </div>
       </section>
 
       {notice && <Toast message={notice} />}
       {preview?.objectUrl && <ImagePreviewDialog src={preview.objectUrl} alt={preview.name} onClose={() => setPreview(undefined)} />}
+      {connected && showConnectionHelp && <ConnectionHelpDialog title={t(relayActive ? 'workspace.connection.relay' : 'workspace.connection.p2p')} message={relayActive ? t('workspace.connection.helpRelay') : t('workspace.connection.helpP2p')} actionLabel={t('dialog.error.confirm')} closeLabel={t('dialog.error.close')} onClose={() => setShowConnectionHelp(false)} />}
     </main>
   );
 }

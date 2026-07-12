@@ -2,6 +2,14 @@ export const APP_NAME = '柚子快传';
 export const API = { config: '/api/config', pairings: '/api/pairings', exchange: '/api/pairings/exchange', presence: '/api/presence' } as const;
 export const STORAGE_KEYS = { deviceId: 'yuzu.device-id', nickname: 'yuzu.nickname', avatar: 'yuzu.avatar', pairingCode: 'yuzu.pairing-code', conversations: 'yuzu.conversations', language: 'yuzu.language' } as const;
 export const DEFAULT_RELAY_LIMIT = 50 * 1024 * 1024;
+export const TRANSFER_STATUS = {
+  queued: 'queued',
+  transferring: 'transferring',
+  paused: 'paused',
+  cancelled: 'cancelled',
+  failed: 'failed',
+  completed: 'completed',
+} as const;
 export const DEFAULT_ICE_SERVERS: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
 export const PAIRING_CODE_LENGTH = 4;
 export const DEVICE_NAMES = { 'zh-CN': ['青柚', '蜜柚', '柚柚', '小柚'], 'en-US': ['Yuzu', 'Citrus', 'Lime', 'Pomelo'] } as const;

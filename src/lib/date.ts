@@ -11,6 +11,12 @@ export function formatMessageTime(value: string, language: ResolvedLanguage) {
   return new Date(value).toLocaleTimeString(language, MESSAGE_TIME_OPTIONS);
 }
 
+export function getMessageTimeGroupKey(value: string, language: ResolvedLanguage) {
+  const target = new Date(value);
+  if (Number.isNaN(target.getTime())) return '';
+  return target.toLocaleTimeString(language, MESSAGE_TIME_OPTIONS);
+}
+
 export function formatConversationTime(value: string, language: ResolvedLanguage) {
   const target = new Date(value);
   const now = new Date();
