@@ -39,7 +39,8 @@ header { height:72px; border-bottom:1px solid #ecede9; display:flex; align-items
 .avatar-option { padding:0; border:0; background:transparent; }
 .settings-avatar { width:44px; height:44px; border-radius:50%; font-size:16px; border:2px solid transparent; }
 .avatar-option.selected .settings-avatar { border-color:#ffc800; box-shadow:0 0 0 3px #fff4bf; }
-.settings-save { display:flex; align-items:center; gap:8px; color:#5f6c66; font-size:13px; }
+.settings-save { display:flex; justify-content:flex-end; }
+.settings-save .primary-button { width:auto; margin-top:0; display:inline-flex; align-items:center; gap:8px; padding-inline:18px; }
 .about-panel { display:flex; flex-direction:column; gap:12px; }
 .about-link { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:15px 16px; border:1px solid #e7ebe6; border-radius:12px; color:#34413c; text-decoration:none; }
 .about-link span { display:flex; align-items:center; gap:8px; }
