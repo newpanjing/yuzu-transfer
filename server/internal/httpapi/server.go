@@ -8,12 +8,13 @@ import (
 )
 
 const (
-	apiConfigPath    = "/api/config"
-	apiPairingsPath  = "/api/pairings"
-	apiExchangePath  = "/api/pairings/exchange"
-	apiPresencePath  = "/api/presence"
-	apiSignalingPath = "/api/signaling"
-	healthPath       = "/health"
+	apiConfigPath     = "/api/config"
+	apiPairingsPath   = "/api/pairings"
+	apiExchangePath   = "/api/pairings/exchange"
+	apiPresencePath   = "/api/presence"
+	apiLanDevicesPath = "/api/lan-devices"
+	apiSignalingPath  = "/api/signaling"
+	healthPath        = "/health"
 )
 
 type Server struct {
@@ -36,6 +37,7 @@ func (server *Server) Mux() *http.ServeMux {
 	mux.HandleFunc(apiPairingsPath, cors(server.store.CreatePairing))
 	mux.HandleFunc(apiExchangePath, cors(server.store.Exchange))
 	mux.HandleFunc(apiPresencePath, cors(server.store.Presence))
+	mux.HandleFunc(apiLanDevicesPath, cors(server.store.LanDevices))
 	mux.HandleFunc(apiSignalingPath, server.store.Signal)
 	mux.HandleFunc(healthPath, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	return mux

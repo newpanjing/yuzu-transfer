@@ -1,5 +1,5 @@
 export const APP_NAME = '柚子快传';
-export const API = { config: '/api/config', pairings: '/api/pairings', exchange: '/api/pairings/exchange', presence: '/api/presence' } as const;
+export const API = { config: '/api/config', pairings: '/api/pairings', exchange: '/api/pairings/exchange', presence: '/api/presence', lanDevices: '/api/lan-devices' } as const;
 export const STORAGE_KEYS = { deviceId: 'yuzu.device-id', nickname: 'yuzu.nickname', avatar: 'yuzu.avatar', pairingCode: 'yuzu.pairing-code', conversations: 'yuzu.conversations', language: 'yuzu.language' } as const;
 export const DEFAULT_RELAY_LIMIT = 50 * 1024 * 1024;
 export const TRANSFER_STATUS = {

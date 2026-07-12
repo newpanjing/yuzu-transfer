@@ -68,6 +68,7 @@ npm run build
 - 发送方 / 接收方双向进度显示
 - 在线状态查询与自动刷新
 - 网络变化后自动重连 signaling，并尝试恢复当前会话
+- 新链接页自动发现同网络内保持在线的设备，并可直接连接
 - 中英文国际化
 - 教程、设置、关于页面
 
@@ -78,6 +79,7 @@ npm run build
 - `POST /api/pairings`
 - `POST /api/pairings/exchange`
 - `POST /api/presence`
+- `POST /api/lan-devices`
 - `GET /api/config`
 - `GET /api/signaling?deviceId=xxx`（WebSocket）
 
@@ -116,3 +118,4 @@ bash scripts/release_frontend.sh
 - 刷新验证码前，当前设备会复用已有验证码
 - 图片 / 文件消息在页面刷新后会显示为已过期，不再可下载
 - 实际传输优先走 P2P；无法直连时自动回退到 TURN 中转
+- 同网络设备发现依赖后端观察到的真实客户端来源地址；经反向代理部署时需透传 `X-Forwarded-For` 或 `X-Real-IP`

@@ -1,5 +1,6 @@
 export type Pairing = { code: string; expiresAt: string };
 export type Presence = { deviceId: string; online: boolean; nickname?: string; avatar?: string };
+export type LanDevice = { deviceId: string; nickname: string; avatar: string; online: true };
 export type IceServerConfig = { urls: string[]; username?: string; credential?: string };
 export type RtcConfig = { relayMaxFileSize: number; iceServers: IceServerConfig[] };
 export type DeviceProfile = { nickname: string; avatar: string };

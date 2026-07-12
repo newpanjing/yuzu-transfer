@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test:file-transfer": "bash scripts/test_file_transfer.sh"
+    "test:file-transfer": "bash scripts/test_file_transfer.sh",
+    "test:p2p-local": "bash scripts/test_local_p2p_transfer.sh"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

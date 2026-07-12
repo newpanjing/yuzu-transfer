@@ -4,7 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,8 @@ const (
 	codeLifetime            = 100 * 365 * 24 * time.Hour
 	signalTypePresence      = "presence"
 	signalTypePresenceWatch = "presence-watch"
+	signalTypeDeviceProfile = "device-profile"
+	signalTypeLanDevices    = "lan-devices"
 )
 
 type pairing struct {
@@ -57,9 +61,31 @@ type presenceWatchRequest struct {
 	DeviceIDs []string `json:"deviceIds"`
 }
 
+type lanDevicesRequest struct {
+	DeviceID string `json:"deviceId"`
+}
+
+type lanDevicesResponse struct {
+	Devices []lanDevice `json:"devices"`
+}
+
+type lanDevice struct {
+	DeviceID string `json:"deviceId"`
+	Nickname string `json:"nickname"`
+	Avatar   string `json:"avatar"`
+	Online   bool   `json:"online"`
+}
+
+type deviceProfile struct {
+	Nickname string `json:"nickname"`
+	Avatar   string `json:"avatar"`
+}
+
 type signalingClient struct {
 	connection *websocket.Conn
 	writeMutex sync.Mutex
+	networkID  string
+	profile    deviceProfile
 }
 
 func (client *signalingClient) WriteJSON(payload any) error {
@@ -99,7 +125,14 @@ func (store *Store) Signal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	client := &signalingClient{connection: connection}
+	client := &signalingClient{
+		connection: connection,
+		networkID:  requestNetworkID(r),
+		profile: deviceProfile{
+			Nickname: strings.TrimSpace(r.URL.Query().Get("nickname")),
+			Avatar:   strings.TrimSpace(r.URL.Query().Get("avatar")),
+		},
+	}
 	store.Lock()
 	previousClient := store.clients[deviceID]
 	store.clients[deviceID] = client
@@ -108,6 +141,7 @@ func (store *Store) Signal(w http.ResponseWriter, r *http.Request) {
 		_ = previousClient.connection.Close()
 	}
 	store.broadcastPresence(deviceID, true)
+	store.broadcastLanDevices(client.networkID)
 	defer func() {
 		removed := false
 		store.Lock()
@@ -119,6 +153,7 @@ func (store *Store) Signal(w http.ResponseWriter, r *http.Request) {
 		_ = connection.Close()
 		if removed {
 			store.broadcastPresence(deviceID, false)
+			store.broadcastLanDevices(client.networkID)
 		}
 	}()
 
@@ -134,6 +169,13 @@ func (store *Store) Signal(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
+		if message.Type == signalTypeDeviceProfile {
+			var profile deviceProfile
+			if json.Unmarshal(message.Payload, &profile) == nil {
+				store.setClientProfile(deviceID, client, profile)
+			}
+			continue
+		}
 		if message.To == "" || message.Type == "" {
 			continue
 		}
@@ -143,6 +185,40 @@ func (store *Store) Signal(w http.ResponseWriter, r *http.Request) {
 		if targetClient != nil {
 			_ = targetClient.WriteJSON(map[string]any{"from": deviceID, "type": message.Type, "payload": message.Payload})
 		}
+	}
+}
+
+func (store *Store) setClientProfile(deviceID string, client *signalingClient, profile deviceProfile) {
+	store.Lock()
+	if store.clients[deviceID] != client {
+		store.Unlock()
+		return
+	}
+	client.profile = deviceProfile{Nickname: strings.TrimSpace(profile.Nickname), Avatar: strings.TrimSpace(profile.Avatar)}
+	networkID := client.networkID
+	store.Unlock()
+	store.broadcastLanDevices(networkID)
+}
+
+func (store *Store) broadcastLanDevices(networkID string) {
+	if networkID == "" {
+		return
+	}
+	type delivery struct {
+		client  *signalingClient
+		devices []lanDevice
+	}
+	store.Lock()
+	deliveries := make([]delivery, 0)
+	for deviceID, client := range store.clients {
+		if client.networkID != networkID {
+			continue
+		}
+		deliveries = append(deliveries, delivery{client: client, devices: store.lanDevicesLocked(networkID, deviceID)})
+	}
+	store.Unlock()
+	for _, item := range deliveries {
+		_ = item.client.WriteJSON(map[string]any{"type": signalTypeLanDevices, "payload": lanDevicesResponse{Devices: item.devices}})
 	}
 }
 
@@ -265,6 +341,66 @@ func (store *Store) Presence(w http.ResponseWriter, r *http.Request) {
 		devices = append(devices, devicePresence{DeviceID: trimmed, Online: store.clients[trimmed] != nil})
 	}
 	respondJSON(w, presenceResponse{Devices: devices})
+}
+
+func (store *Store) LanDevices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var input lanDevicesRequest
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || strings.TrimSpace(input.DeviceID) == "" {
+		http.Error(w, "deviceId is required", http.StatusBadRequest)
+		return
+	}
+	networkID := requestNetworkID(r)
+	if networkID == "" {
+		respondJSON(w, lanDevicesResponse{Devices: []lanDevice{}})
+		return
+	}
+	store.Lock()
+	devices := store.lanDevicesLocked(networkID, input.DeviceID)
+	store.Unlock()
+	respondJSON(w, lanDevicesResponse{Devices: devices})
+}
+
+func (store *Store) lanDevicesLocked(networkID string, excludedDeviceID string) []lanDevice {
+	devices := make([]lanDevice, 0)
+	for deviceID, client := range store.clients {
+		if deviceID == excludedDeviceID || client.networkID != networkID {
+			continue
+		}
+		devices = append(devices, lanDevice{DeviceID: deviceID, Nickname: client.profile.Nickname, Avatar: client.profile.Avatar, Online: true})
+	}
+	sort.Slice(devices, func(left int, right int) bool {
+		if devices[left].Nickname == devices[right].Nickname {
+			return devices[left].DeviceID < devices[right].DeviceID
+		}
+		return devices[left].Nickname < devices[right].Nickname
+	})
+	return devices
+}
+
+func requestNetworkID(r *http.Request) string {
+	for _, value := range []string{r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Real-IP")} {
+		candidate := strings.TrimSpace(strings.Split(value, ",")[0])
+		if ip := net.ParseIP(candidate); isUsableNetworkIP(ip) {
+			return ip.String()
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return ""
+	}
+	ip := net.ParseIP(host)
+	if !isUsableNetworkIP(ip) {
+		return ""
+	}
+	return ip.String()
+}
+
+func isUsableNetworkIP(ip net.IP) bool {
+	return ip != nil && !ip.IsLoopback() && !ip.IsUnspecified()
 }
 
 func respondJSON(w http.ResponseWriter, payload any) {

@@ -11,10 +11,11 @@ export function buildApiUrl(path: string) {
   return new URL(path, resolveServerOrigin()).toString();
 }
 
-export function buildSignalingUrl(deviceId: string) {
+export function buildSignalingUrl(deviceId: string, profile: { nickname: string; avatar: string }) {
   const origin = new URL(resolveServerOrigin(), window.location.origin);
   const protocol = origin.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${origin.host}${SIGNALING_PATH}?deviceId=${encodeURIComponent(deviceId)}`;
+  const search = new URLSearchParams({ deviceId, nickname: profile.nickname, avatar: profile.avatar });
+  return `${protocol}//${origin.host}${SIGNALING_PATH}?${search.toString()}`;
 }
 
 export const API_BASE_PREFIX = API_PREFIX;

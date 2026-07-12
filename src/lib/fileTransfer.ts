@@ -2,11 +2,11 @@ const KIBIBYTE = 1024;
 const MEBIBYTE = KIBIBYTE * KIBIBYTE;
 
 export const P2P_FILE_CHUNK_SIZE = 128 * KIBIBYTE;
-export const RELAY_FILE_CHUNK_SIZE = 16 * KIBIBYTE;
+export const RELAY_FILE_CHUNK_SIZE = 64 * KIBIBYTE;
 export const P2P_BUFFER_LOW_THRESHOLD = 4 * MEBIBYTE;
 export const P2P_BUFFER_HIGH_WATER_MARK = 8 * MEBIBYTE;
-export const RELAY_BUFFER_LOW_THRESHOLD = 256 * KIBIBYTE;
-export const RELAY_BUFFER_HIGH_WATER_MARK = 512 * KIBIBYTE;
+export const RELAY_BUFFER_LOW_THRESHOLD = MEBIBYTE;
+export const RELAY_BUFFER_HIGH_WATER_MARK = 2 * MEBIBYTE;
 export const FILE_PROGRESS_UPDATE_INTERVAL_MS = 120;
 
 export type FileTransferBufferLimits = {
@@ -21,8 +21,10 @@ export type BufferedDataChannelLike = {
   send: (data: ArrayBuffer) => void;
 };
 
-export function resolveFileChunkSize(relayActive: boolean) {
-  return relayActive ? RELAY_FILE_CHUNK_SIZE : P2P_FILE_CHUNK_SIZE;
+export function resolveFileChunkSize(relayActive: boolean, maxMessageSize?: number) {
+  const configuredSize = relayActive ? RELAY_FILE_CHUNK_SIZE : P2P_FILE_CHUNK_SIZE;
+  if (!maxMessageSize || maxMessageSize <= 0) return configuredSize;
+  return Math.min(configuredSize, maxMessageSize);
 }
 
 export function resolveDataChannelBufferLimits(relayActive: boolean): FileTransferBufferLimits {

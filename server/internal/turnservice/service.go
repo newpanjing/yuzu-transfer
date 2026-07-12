@@ -25,7 +25,13 @@ func Start(turnConfig config.TurnConfig) error {
 		return fmt.Errorf("start turn tcp listener: %w", err)
 	}
 	authKey := turn.GenerateAuthKey(turnConfig.Username, turnConfig.Realm, turnConfig.Password)
-	relayGenerator := &turn.RelayAddressGeneratorStatic{
+	udpRelayGenerator := &turn.RelayAddressGeneratorPortRange{
+		RelayAddress: net.ParseIP(turnConfig.PublicIP),
+		Address:      turnConfig.BindHost,
+		MinPort:      turnConfig.RelayMinPort,
+		MaxPort:      turnConfig.RelayMaxPort,
+	}
+	tcpRelayGenerator := &turn.RelayAddressGeneratorStatic{
 		RelayAddress: net.ParseIP(turnConfig.PublicIP),
 		Address:      turnConfig.BindHost,
 	}
@@ -39,11 +45,11 @@ func Start(turnConfig config.TurnConfig) error {
 		},
 		PacketConnConfigs: []turn.PacketConnConfig{{
 			PacketConn:            udpListener,
-			RelayAddressGenerator: relayGenerator,
+			RelayAddressGenerator: udpRelayGenerator,
 		}},
 		ListenerConfigs: []turn.ListenerConfig{{
 			Listener:              tcpListener,
-			RelayAddressGenerator: relayGenerator,
+			RelayAddressGenerator: tcpRelayGenerator,
 		}},
 	})
 	if err != nil {

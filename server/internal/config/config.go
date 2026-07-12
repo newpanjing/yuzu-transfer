@@ -16,6 +16,8 @@ const (
 	defaultTurnUsername   = "yuzu"
 	defaultTurnPassword   = "yuzu-turn"
 	defaultTurnBindHost   = "0.0.0.0"
+	defaultRelayMinPort   = 50000
+	defaultRelayMaxPort   = 50100
 	defaultRelayMaxSizeMB = 50 * 1024 * 1024
 	udpNetwork            = "udp4"
 )
@@ -27,12 +29,14 @@ type IceServer struct {
 }
 
 type TurnConfig struct {
-	Port     int
-	PublicIP string
-	Realm    string
-	Username string
-	Password string
-	BindHost string
+	Port         int
+	PublicIP     string
+	Realm        string
+	Username     string
+	Password     string
+	BindHost     string
+	RelayMinPort uint16
+	RelayMaxPort uint16
 }
 
 type Config struct {
@@ -50,18 +54,30 @@ func Load() (Config, error) {
 		}
 		publicIP = detectedIP
 	}
+	relayMinPort, relayMaxPort := relayPortRange()
 	return Config{
 		AppPort:          envInt("APP_PORT", defaultAppPort),
 		RelayMaxFileSize: defaultRelayMaxSizeMB,
 		Turn: TurnConfig{
-			Port:     envInt("TURN_PORT", defaultTurnPort),
-			PublicIP: publicIP,
-			Realm:    envString("TURN_REALM", defaultTurnRealm),
-			Username: envString("TURN_USERNAME", defaultTurnUsername),
-			Password: envString("TURN_PASSWORD", defaultTurnPassword),
-			BindHost: envString("TURN_BIND_HOST", defaultTurnBindHost),
+			Port:         envInt("TURN_PORT", defaultTurnPort),
+			PublicIP:     publicIP,
+			Realm:        envString("TURN_REALM", defaultTurnRealm),
+			Username:     envString("TURN_USERNAME", defaultTurnUsername),
+			Password:     envString("TURN_PASSWORD", defaultTurnPassword),
+			BindHost:     envString("TURN_BIND_HOST", defaultTurnBindHost),
+			RelayMinPort: relayMinPort,
+			RelayMaxPort: relayMaxPort,
 		},
 	}, nil
+}
+
+func relayPortRange() (uint16, uint16) {
+	minPort := envInt("TURN_RELAY_MIN_PORT", defaultRelayMinPort)
+	maxPort := envInt("TURN_RELAY_MAX_PORT", defaultRelayMaxPort)
+	if minPort < 1 || maxPort > 65535 || minPort > maxPort {
+		return defaultRelayMinPort, defaultRelayMaxPort
+	}
+	return uint16(minPort), uint16(maxPort)
 }
 
 func (config Config) IceServers(host string) []IceServer {

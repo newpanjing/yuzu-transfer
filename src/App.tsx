@@ -7,18 +7,19 @@ import { ConversationsView } from './components/ConversationsView';
 import { ErrorDialog } from './components/ErrorDialog';
 import { LanguageSwitcher } from './components/LanguageSwitcher';
 import { MobileBottomNav } from './components/MobileBottomNav';
+import { ReconnectDialog } from './components/ReconnectDialog';
 import { SettingsView } from './components/SettingsView';
 import { Sidebar } from './components/Sidebar';
 import { Toast } from './components/Toast';
 import { TransferWorkspace } from './components/TransferWorkspace';
 import { TutorialView } from './components/TutorialView';
 import { DEFAULT_ICE_SERVERS, DEFAULT_PEER_AVATAR, DEFAULT_PEER_NICKNAME, DEFAULT_RELAY_LIMIT } from './constants';
-import { createPairing, exchangePairing, getPresence, getRtcConfig } from './lib/api';
+import { createPairing, exchangePairing, getLanDevices, getPresence, getRtcConfig } from './lib/api';
 import { loadConversations, saveConversations } from './lib/conversations';
 import { getAvatar, getDeviceId, getNickname, getStoredPairingCode, saveAvatar, saveNickname, savePairingCode } from './lib/device';
 import { translateNow, useI18n } from './lib/i18n';
 import { PeerTransport } from './lib/peer';
-import type { Conversation, DeviceProfile, TransferItem, View } from './types';
+import type { Conversation, DeviceProfile, LanDevice, TransferItem, View } from './types';
 
 const GITHUB_URL = 'https://github.com/newpanjing/yuzu-transfer';
 const AUTO_JOIN_RETRY_DELAY_MS = 600;
@@ -26,8 +27,11 @@ const NETWORK_RECOVERY_DELAY_MS = 900;
 const SIGNALING_UNAVAILABLE_ERROR = 'signaling unavailable';
 const PAIRING_CODE_LENGTH = 4;
 const CHAT_VIEWPORT_HEIGHT_CSS_VARIABLE = '--chat-viewport-height';
+const KEYBOARD_VIEWPORT_DELTA_THRESHOLD_PX = 320;
+const RESTORE_RECONNECT_STATE = { idle: 'idle', connecting: 'connecting', failed: 'failed' } as const;
 type JoinOptions = { silentSignalError?: boolean };
 type JoinResult = 'success' | 'signaling-unavailable' | 'blocked' | 'pairing-error';
+type RestoreReconnectState = typeof RESTORE_RECONNECT_STATE[keyof typeof RESTORE_RECONNECT_STATE];
 type NavigatorConnectionLike = { addEventListener?: (type: 'change', listener: () => void) => void; removeEventListener?: (type: 'change', listener: () => void) => void };
 
 function getPairingCodeFromLocation() {
@@ -70,8 +74,13 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [relayActive, setRelayActive] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
+  const [lanDevices, setLanDevices] = useState<LanDevice[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>(restoredSession.conversations);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(restoredSession.selectedDeviceId);
+  const [restoreReconnectDeviceId] = useState(restoredSession.selectedDeviceId);
+  const [restoreReconnectState, setRestoreReconnectState] = useState<RestoreReconnectState>(RESTORE_RECONNECT_STATE.idle);
+  const [restoreReconnectMessage, setRestoreReconnectMessage] = useState('');
+  const [restoreReconnectRetry, setRestoreReconnectRetry] = useState(0);
   const activePeerRef = useRef<string | null>(null);
   const autoJoinCode = useRef(initialJoinCode);
   const autoJoinRetryTimer = useRef<number | undefined>(undefined);
@@ -79,6 +88,7 @@ export default function App() {
   const networkRecoveryTimer = useRef<number | undefined>(undefined);
   const conversationsRef = useRef(conversations);
   const incomingConnectionRef = useRef(false);
+  const restoreReconnectAttemptRef = useRef('');
 
   const profile: DeviceProfile = { nickname, avatar };
   const presenceDeviceIds = useMemo(() => conversations.filter((conversation) => !conversation.blocked).map((conversation) => conversation.deviceId).sort(), [conversations]);
@@ -97,7 +107,11 @@ export default function App() {
     const viewport = window.visualViewport;
     const syncChatViewportHeight = () => {
       const height = viewport?.height ?? window.innerHeight;
-      document.documentElement.style.setProperty(CHAT_VIEWPORT_HEIGHT_CSS_VARIABLE, `${height}px`);
+      if (window.innerHeight - height > KEYBOARD_VIEWPORT_DELTA_THRESHOLD_PX) {
+        document.documentElement.style.setProperty(CHAT_VIEWPORT_HEIGHT_CSS_VARIABLE, `${height}px`);
+        return;
+      }
+      document.documentElement.style.removeProperty(CHAT_VIEWPORT_HEIGHT_CSS_VARIABLE);
     };
     syncChatViewportHeight();
     viewport?.addEventListener('resize', syncChatViewportHeight);
@@ -176,6 +190,15 @@ export default function App() {
     }
   };
 
+  const refreshLanDevices = async () => {
+    try {
+      const response = await getLanDevices(deviceId);
+      setLanDevices(response.devices);
+    } catch {
+      setLanDevices([]);
+    }
+  };
+
   useEffect(() => {
     let active = true;
     void refreshPairingCode();
@@ -194,6 +217,7 @@ export default function App() {
     const instance = new PeerTransport(deviceId, profile, {
       onOpen: () => {
         setConnected(true);
+        setRestoreReconnectState(RESTORE_RECONNECT_STATE.idle);
         setView('transfer');
         const peerDeviceId = activePeerRef.current;
         if (peerDeviceId) setPeerOnline(peerDeviceId, true);
@@ -217,6 +241,7 @@ export default function App() {
         if (!online || activePeerRef.current !== peerDeviceId || findConversation(peerDeviceId)?.blocked || instance.isConnectedTo(peerDeviceId)) return;
         void instance.start(peerDeviceId).catch(() => setPeerOnline(peerDeviceId, false));
       },
+      onLanDevices: setLanDevices,
       onPeerProfile: (nextProfile) => {
         const peerDeviceId = activePeerRef.current;
         if (!peerDeviceId) return;
@@ -240,6 +265,17 @@ export default function App() {
     setTransport(instance);
     return () => instance.close();
   }, [deviceId, iceServers, rtcConfigReady]);
+
+  useEffect(() => {
+    if (view !== 'connect' || !transport) return;
+    let active = true;
+    const loadLanDevices = async () => {
+      await transport.waitForSignalingReady();
+      if (active) await refreshLanDevices();
+    };
+    void loadLanDevices();
+    return () => { active = false; };
+  }, [transport, view]);
 
   useEffect(() => {
     transport?.updateProfile(profile);
@@ -278,35 +314,75 @@ export default function App() {
     if (networkRecoveryTimer.current) window.clearTimeout(networkRecoveryTimer.current);
   }, []);
 
-  const connectToPeer = async (peerDeviceId: string) => {
+  const connectToPeer = async (peerDeviceId: string, localNetworkOnly = false) => {
     if (!transport) {
       setError(t('error.signalingRequired'));
-      return;
+      return false;
     }
     if (findConversation(peerDeviceId)?.blocked) {
       setError(t('error.blockedJoin'));
-      return;
+      return false;
     }
     if (transport.isConnectedTo(peerDeviceId)) {
       activePeerRef.current = peerDeviceId;
       setSelectedDeviceId(peerDeviceId);
       setView('transfer');
-      return;
+      return true;
     }
-    if (transport.isConnectingTo(peerDeviceId)) return;
+    if (transport.isConnectingTo(peerDeviceId)) return false;
     setBusy(true);
     setError('');
     try {
-      await transport.start(peerDeviceId);
+      await transport.start(peerDeviceId, { localNetworkOnly });
       setSelectedDeviceId(peerDeviceId);
       setView('transfer');
+      return true;
     } catch {
       setPeerOnline(peerDeviceId, false);
       setError(t('error.connect'));
+      return false;
     } finally {
       setBusy(false);
     }
   };
+
+  const connectToLanDevice = (device: LanDevice) => {
+    updateConversation(device.deviceId, (conversation) => ({ ...conversation, nickname: device.nickname || conversation.nickname, avatar: device.avatar || conversation.avatar, online: true }));
+    void connectToPeer(device.deviceId, true);
+  };
+
+  useEffect(() => {
+    if (!restoreReconnectDeviceId || !transport) return;
+    const attemptKey = `${restoreReconnectDeviceId}:${restoreReconnectRetry}`;
+    if (restoreReconnectAttemptRef.current === attemptKey) return;
+    restoreReconnectAttemptRef.current = attemptKey;
+    let cancelled = false;
+    activePeerRef.current = restoreReconnectDeviceId;
+    setRestoreReconnectMessage('');
+    setRestoreReconnectState(RESTORE_RECONNECT_STATE.connecting);
+    const restoreConnection = async () => {
+      try {
+        const response = await getPresence([restoreReconnectDeviceId]);
+        const peerOnline = response.devices.some((device) => device.deviceId === restoreReconnectDeviceId && device.online);
+        if (!peerOnline) {
+          if (!cancelled) {
+            setRestoreReconnectMessage(t('dialog.reconnect.offlineBody'));
+            setRestoreReconnectState(RESTORE_RECONNECT_STATE.failed);
+          }
+          return;
+        }
+        if (!await connectToPeer(restoreReconnectDeviceId)) throw new Error('restore connection failed');
+        if (!cancelled) setRestoreReconnectState(RESTORE_RECONNECT_STATE.idle);
+      } catch {
+        if (!cancelled) {
+          setRestoreReconnectMessage(t('dialog.reconnect.failedBody'));
+          setRestoreReconnectState(RESTORE_RECONNECT_STATE.failed);
+        }
+      }
+    };
+    void restoreConnection();
+    return () => { cancelled = true; };
+  }, [restoreReconnectDeviceId, restoreReconnectRetry, transport]);
 
   const join = async (code = joinCode, options: JoinOptions = {}): Promise<JoinResult> => {
     if (!transport) return 'signaling-unavailable';
@@ -473,5 +549,5 @@ export default function App() {
   const showTopHeader = isMobile && !hideGlobalChrome;
   const appShellClassName = hideGlobalChrome ? 'app-shell app-shell--chat' : !isMobile ? 'app-shell app-shell--desktop' : 'app-shell';
 
-  return <div className={appShellClassName}>{showTopHeader && <header><Brand /><div className="header-actions"><LanguageSwitcher /></div></header>}<div className={hideGlobalChrome ? 'app-body app-body--chat' : 'app-body'}>{!hideGlobalChrome && <Sidebar conversations={conversations} activeDeviceId={selectedDeviceId} activeView={view} onConnect={() => { setTransitionDirection('back'); setView('connect'); }} onTutorial={() => { setTransitionDirection('forward'); setView('tutorial'); }} onSettings={() => { setTransitionDirection('forward'); setView('settings'); }} onSelect={openTransferView} />}<div key={`${view}-${selectedDeviceId ?? 'none'}`} className={hideGlobalChrome ? `view-frame view-frame--chat view-frame--${transitionDirection}` : `view-frame view-frame--${transitionDirection}`}>{view === 'connect' ? <main className="connect-view connect-view--minimal"><ConnectionPanel pairingCode={pairingCode} qrValue={qrValue} invitationText={invitationText} joinCode={joinCode} onJoinCodeChange={setJoinCode} onJoin={() => void join()} onRefresh={() => void refreshPairingCode(true)} busy={busy} />{error && <div className="error-banner">{error}</div>}</main> : view === 'conversations' ? <ConversationsView conversations={conversations} activeDeviceId={selectedDeviceId} onSelect={openTransferView} /> : view === 'tutorial' ? <TutorialView /> : view === 'settings' ? <SettingsView nickname={nickname} avatar={avatar} onOpenAbout={() => { setTransitionDirection('forward'); setView('about'); }} onSave={saveProfile} /> : view === 'about' ? <AboutView githubUrl={GITHUB_URL} onBack={() => { setTransitionDirection('back'); setView('settings'); }} /> : <TransferWorkspace title={getConversationTitle(selectedConversation, t('conversation.defaultPeer'))} avatar={selectedConversation?.avatar ?? DEFAULT_PEER_AVATAR} blocked={selectedConversation?.blocked ?? false} onDeleteConversation={deleteConversation} onToggleBlocked={toggleBlockedConversation} relayLimit={relayLimit} relayActive={relayActive} transport={transport} connected={isSelectedConnected} online={isSelectedOnline} items={selectedMessages} onItemsChange={(next) => { if (!selectedDeviceId) return; updateConversation(selectedDeviceId, (conversation) => ({ ...conversation, messages: typeof next === 'function' ? next(conversation.messages) : next })); }} onBack={backFromTransfer} />}</div></div>{!hideGlobalChrome && <MobileBottomNav activeView={view} hasConversations={conversations.length > 0} onConnect={() => { setTransitionDirection('back'); setView('connect'); }} onConversation={openConversationView} onTutorial={() => { setTransitionDirection('forward'); setView('tutorial'); }} onSettings={() => { setTransitionDirection('forward'); setView('settings'); }} />}{toastMessage && <Toast message={toastMessage} />}{pairingError && <ErrorDialog message={pairingError} onClose={() => setPairingError('')} />}</div>;
+  return <div className={appShellClassName}>{showTopHeader && <header><Brand /><div className="header-actions"><LanguageSwitcher /></div></header>}<div className={hideGlobalChrome ? 'app-body app-body--chat' : 'app-body'}>{!hideGlobalChrome && <Sidebar conversations={conversations} activeDeviceId={selectedDeviceId} activeView={view} onConnect={() => { setTransitionDirection('back'); setView('connect'); }} onTutorial={() => { setTransitionDirection('forward'); setView('tutorial'); }} onSettings={() => { setTransitionDirection('forward'); setView('settings'); }} onSelect={openTransferView} />}<div key={`${view}-${selectedDeviceId ?? 'none'}`} className={hideGlobalChrome ? `view-frame view-frame--chat view-frame--${transitionDirection}` : `view-frame view-frame--${transitionDirection}`}>{view === 'connect' ? <main className="connect-view connect-view--minimal"><ConnectionPanel pairingCode={pairingCode} qrValue={qrValue} invitationText={invitationText} joinCode={joinCode} lanDevices={lanDevices} onJoinCodeChange={setJoinCode} onJoin={() => void join()} onConnectLanDevice={connectToLanDevice} onRefresh={() => { void refreshPairingCode(true); void refreshLanDevices(); }} busy={busy} />{error && <div className="error-banner">{error}</div>}</main> : view === 'conversations' ? <ConversationsView conversations={conversations} activeDeviceId={selectedDeviceId} onSelect={openTransferView} /> : view === 'tutorial' ? <TutorialView /> : view === 'settings' ? <SettingsView nickname={nickname} avatar={avatar} onOpenAbout={() => { setTransitionDirection('forward'); setView('about'); }} onSave={saveProfile} /> : view === 'about' ? <AboutView githubUrl={GITHUB_URL} onBack={() => { setTransitionDirection('back'); setView('settings'); }} /> : <TransferWorkspace title={getConversationTitle(selectedConversation, t('conversation.defaultPeer'))} avatar={selectedConversation?.avatar ?? DEFAULT_PEER_AVATAR} blocked={selectedConversation?.blocked ?? false} onDeleteConversation={deleteConversation} onToggleBlocked={toggleBlockedConversation} relayLimit={relayLimit} relayActive={relayActive} transport={transport} connected={isSelectedConnected} online={isSelectedOnline} items={selectedMessages} onItemsChange={(next) => { if (!selectedDeviceId) return; updateConversation(selectedDeviceId, (conversation) => ({ ...conversation, messages: typeof next === 'function' ? next(conversation.messages) : next })); }} onBack={backFromTransfer} />}</div></div>{!hideGlobalChrome && <MobileBottomNav activeView={view} hasConversations={conversations.length > 0} onConnect={() => { setTransitionDirection('back'); setView('connect'); }} onConversation={openConversationView} onTutorial={() => { setTransitionDirection('forward'); setView('tutorial'); }} onSettings={() => { setTransitionDirection('forward'); setView('settings'); }} />}{toastMessage && <Toast message={toastMessage} />}{pairingError && <ErrorDialog message={pairingError} onClose={() => setPairingError('')} />}{restoreReconnectState !== RESTORE_RECONNECT_STATE.idle && <ReconnectDialog connecting={restoreReconnectState === RESTORE_RECONNECT_STATE.connecting} message={restoreReconnectMessage} onClose={() => setRestoreReconnectState(RESTORE_RECONNECT_STATE.idle)} onRetry={() => setRestoreReconnectRetry((current) => current + 1)} />}</div>;
 }

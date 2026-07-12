@@ -4,6 +4,7 @@
 
 - 验证码生成与设备 ID 映射
 - 在线状态查询
+- 同网络在线设备发现
 - WebSocket signaling 转发
 - STUN / TURN 配置下发
 - TURN 中转服务启动
@@ -48,6 +49,8 @@ TURN_REALM=yuzu-transfer
 TURN_USERNAME=yuzu
 TURN_PASSWORD=yuzu-turn
 TURN_BIND_HOST=0.0.0.0
+TURN_RELAY_MIN_PORT=50000
+TURN_RELAY_MAX_PORT=50100
 ```
 
 说明：
@@ -57,6 +60,9 @@ TURN_BIND_HOST=0.0.0.0
 - `TURN_PUBLIC_IP`：TURN 对外宣告地址；不传时后端会尝试自动探测本机 IPv4
 - `TURN_REALM` / `TURN_USERNAME` / `TURN_PASSWORD`：TURN 鉴权参数
 - `TURN_BIND_HOST`：TURN 中继绑定地址
+- `TURN_RELAY_MIN_PORT` / `TURN_RELAY_MAX_PORT`：UDP relay 分配端口范围
+
+部署到公网时，除 `3478/TCP` 与 `3478/UDP` 外，还必须在云安全组和主机防火墙放行 `TURN_RELAY_MIN_PORT-TURN_RELAY_MAX_PORT/UDP`。默认范围为 `50000-50100/UDP`。未放行该范围时，浏览器可能退化为 TURN/TCP 中转，传输速度会显著下降。
 
 ## 本地启动
 
@@ -130,6 +136,18 @@ go build -o yuzu-transfer .
 }
 ```
 
+### `POST /api/lan-devices`
+
+返回与当前请求来自同一网络出口、且保持 signaling 在线的其他设备。设备名称和头像来自其实际 signaling 连接；服务端不保存设备列表。
+
+请求体：
+
+```json
+{
+  "deviceId": "device_xxx"
+}
+```
+
 ### `GET /api/signaling?deviceId=xxx`
 
 WebSocket signaling 通道。
@@ -179,5 +197,6 @@ pm2 start /opt/www/kc/kc --name kc
 
 - `Host`
 - `X-Forwarded-Host`
+- `X-Forwarded-For` 或 `X-Real-IP`
 
-这样 `/api/config` 才能给前端返回正确的 ICE 主机名。
+这样 `/api/config` 才能给前端返回正确的 ICE 主机名，`/api/lan-devices` 也能按真实客户端来源识别同网络设备。

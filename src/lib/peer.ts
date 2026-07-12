@@ -1,5 +1,5 @@
 import { TRANSFER_STATUS } from '../constants';
-import type { DeviceProfile, TransferStatus } from '../types';
+import type { DeviceProfile, LanDevice, TransferStatus } from '../types';
 import {
   resolveDataChannelBufferLimits,
   resolveFileChunkSize,
@@ -11,7 +11,7 @@ import { translateNow } from './i18n';
 import { buildSignalingUrl } from './runtime';
 
 const DATA_CHANNEL_NAME = 'yuzu-transfer';
-const SIGNAL_TYPE = { offer: 'offer', answer: 'answer', candidate: 'candidate', presence: 'presence', presenceWatch: 'presence-watch' } as const;
+const SIGNAL_TYPE = { offer: 'offer', answer: 'answer', candidate: 'candidate', presence: 'presence', presenceWatch: 'presence-watch', deviceProfile: 'device-profile', lanDevices: 'lan-devices' } as const;
 const DATA_TYPE = { profile: 'profile', text: 'text', fileStart: 'file-start', fileProgress: 'file-progress', fileEnd: 'file-end', filePause: 'file-pause', fileResume: 'file-resume', fileCancel: 'file-cancel' } as const;
 const CONNECTION_STATE = { failed: 'failed', disconnected: 'disconnected', closed: 'closed' } as const;
 const PENDING_CONNECTION_STATE = { new: 'new', connecting: 'connecting' } as const;
@@ -20,18 +20,25 @@ const TRANSPORT_STAT_TYPE = 'transport';
 const RELAY_CANDIDATE_TYPE = 'relay';
 const STATS_POLL_INTERVAL_MS = 2500;
 const SIGNALING_RETRY_DELAY_MS = 1000;
+const PEER_CONNECTION_TIMEOUT_MS = 15000;
+const FILE_READ_AHEAD_CHUNKS = 3;
+const LOCAL_NETWORK_ICE_SERVERS: RTCIceServer[] = [];
 const SIGNALING_ERROR = () => translateNow('peer.signaling');
 const DATA_CHANNEL_ERROR = () => translateNow('peer.dataChannel');
 
 export type IncomingTransfer = { id: string; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; direction: 'incoming' | 'outgoing'; text?: string; progress?: number; transferredBytes?: number; speedBytes?: number; remainingSeconds?: number; elapsedSeconds?: number; transferStatus?: TransferStatus };
-type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onFileProgress: (item: IncomingTransfer) => void; onPeerProfile: (profile: DeviceProfile) => void; onPeerId: (deviceId: string) => void; onPresence: (deviceId: string, online: boolean) => void; onIncomingConnection: () => void; onRelayChange: (relayActive: boolean) => void; onError: (message: string) => void };
+type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onFileProgress: (item: IncomingTransfer) => void; onPeerProfile: (profile: DeviceProfile) => void; onPeerId: (deviceId: string) => void; onPresence: (deviceId: string, online: boolean) => void; onLanDevices: (devices: LanDevice[]) => void; onIncomingConnection: () => void; onRelayChange: (relayActive: boolean) => void; onError: (message: string) => void };
 type PresenceSignal = { deviceId?: unknown; online?: unknown };
+type LanDevicesSignal = { devices?: unknown };
 type Signal = { from?: string; type: string; payload: unknown };
 type ReceivedFile = { id: string; name: string; size: number; mime: string; chunks: ArrayBuffer[]; sentAt: string; startedAt: number; transferredBytes: number; lastProgressReportedAt: number; transferStatus: TransferStatus };
 type OutgoingTransfer = { id: string; file: File; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; startedAt: number; transferredBytes: number; transferStatus: TransferStatus; resume?: () => void };
 type CandidateReport = RTCStats & { candidateType?: string };
 type PairReport = RTCStats & { localCandidateId?: string; remoteCandidateId?: string; nominated?: boolean; selected?: boolean; state?: string };
 type TransportReport = RTCStats & { selectedCandidatePairId?: string };
+type PendingPeerConnection = { peerId: string; resolve: () => void; reject: (error: Error) => void; timeout: number };
+type PendingFileChunk = { buffer: Promise<ArrayBuffer> };
+type PeerStartOptions = { localNetworkOnly?: boolean };
 
 function buildTransferMetrics(transferredBytes: number, totalBytes: number, startedAt: number) {
   const progress = totalBytes === 0 ? 1 : Math.min(transferredBytes / totalBytes, 1);
@@ -60,6 +67,7 @@ export class PeerTransport {
   private activeOutgoingTransfer?: OutgoingTransfer;
   private processingOutgoingQueue = false;
   private presenceDeviceIds: string[] = [];
+  private pendingPeerConnection?: PendingPeerConnection;
 
   constructor(private readonly deviceId: string, profile: DeviceProfile, private readonly callbacks: Callbacks, private readonly iceServers: RTCIceServer[]) {
     this.profile = profile;
@@ -88,18 +96,24 @@ export class PeerTransport {
     return !this.signalingFailed && this.socket?.readyState === WebSocket.OPEN;
   }
 
-  async start(peerId: string) {
+  async start(peerId: string, options: PeerStartOptions = {}) {
     if (!await this.waitForSignalingReady()) throw new Error('signaling unavailable');
     this.disconnectPeer();
     this.peerId = peerId;
     this.callbacks.onPeerId(peerId);
-    const peer = this.createPeer();
+    const peer = this.createPeer(options.localNetworkOnly ? LOCAL_NETWORK_ICE_SERVERS : this.iceServers);
     this.channel = peer.createDataChannel(DATA_CHANNEL_NAME, { ordered: true });
     this.bindChannel(this.channel);
-    void peer.createOffer().then(async (offer) => {
+    const connectionReady = this.waitForPeerConnection(peerId);
+    try {
+      const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
       this.sendSignal(SIGNAL_TYPE.offer, offer);
-    });
+      await connectionReady;
+    } catch (error) {
+      this.rejectPendingPeerConnection(error);
+      throw error;
+    }
   }
 
   sendText(text: string) { this.sendJson({ type: DATA_TYPE.text, text, sentAt: new Date().toISOString() }); }
@@ -186,12 +200,24 @@ export class PeerTransport {
     transfer.startedAt = Date.now();
     this.reportOutgoingTransfer(transfer);
     this.sendJson({ type: DATA_TYPE.fileStart, id: transfer.id, name: transfer.name, size: transfer.size, mime: transfer.file.type, sentAt: transfer.sentAt });
-    const chunkSize = resolveFileChunkSize(this.relayActive);
+    const chunkSize = resolveFileChunkSize(this.relayActive, this.peer?.sctp?.maxMessageSize);
     const bufferLimits = resolveDataChannelBufferLimits(this.relayActive);
-    for (let offset = 0; offset < transfer.file.size; offset += chunkSize) {
+    const pendingChunks: PendingFileChunk[] = [];
+    let nextOffset = 0;
+    const queueChunkRead = () => {
+      if (nextOffset >= transfer.file.size) return;
+      const offset = nextOffset;
+      nextOffset += chunkSize;
+      pendingChunks.push({ buffer: transfer.file.slice(offset, offset + chunkSize).arrayBuffer() });
+    };
+    while (pendingChunks.length < FILE_READ_AHEAD_CHUNKS) queueChunkRead();
+    while (pendingChunks.length > 0) {
       if (!await this.waitForFileResume(transfer)) return;
       if (!this.channel || this.channel.readyState !== 'open') throw new Error(DATA_CHANNEL_ERROR());
-      const buffer = await transfer.file.slice(offset, offset + chunkSize).arrayBuffer();
+      const pendingChunk = pendingChunks.shift();
+      if (!pendingChunk) break;
+      queueChunkRead();
+      const buffer = await pendingChunk.buffer;
       this.channel.send(buffer);
       if (shouldWaitForBufferedAmount(this.channel.bufferedAmount, bufferLimits.highWaterMark)) {
         await waitForDataChannelDrain(this.channel, bufferLimits.lowThreshold);
@@ -245,6 +271,7 @@ export class PeerTransport {
   updateProfile(profile: DeviceProfile) {
     this.profile = profile;
     this.sendJson({ type: DATA_TYPE.profile, ...this.profile });
+    this.sendSignalingProfile();
   }
 
   isConnectedTo(deviceId: string) {
@@ -258,6 +285,7 @@ export class PeerTransport {
   disconnectPeer() {
     this.stopTransportStats();
     this.updateRelayState(false);
+    this.rejectPendingPeerConnection(new Error(DATA_CHANNEL_ERROR()));
     this.failPendingOutgoingTransfers();
     this.failPendingIncomingTransfer();
     this.channel?.close();
@@ -291,7 +319,7 @@ export class PeerTransport {
       this.signalingReconnectTimer = undefined;
     }
     this.signalingFailed = false;
-    const socket = new WebSocket(buildSignalingUrl(this.deviceId));
+    const socket = new WebSocket(buildSignalingUrl(this.deviceId, this.profile));
     this.socket = socket;
     this.signalingReady = new Promise((resolve) => {
       socket.onopen = () => {
@@ -321,13 +349,14 @@ export class PeerTransport {
     }, SIGNALING_RETRY_DELAY_MS);
   }
 
-  private createPeer() {
-    const peer = new RTCPeerConnection({ iceServers: this.iceServers });
+  private createPeer(iceServers = this.iceServers) {
+    const peer = new RTCPeerConnection({ iceServers });
     peer.onicecandidate = (event) => {
       if (event.candidate) this.sendSignal(SIGNAL_TYPE.candidate, event.candidate.toJSON());
     };
     peer.onconnectionstatechange = () => {
       if (peer.connectionState === CONNECTION_STATE.failed || peer.connectionState === CONNECTION_STATE.disconnected || peer.connectionState === CONNECTION_STATE.closed) {
+        this.rejectPendingPeerConnection(new Error(DATA_CHANNEL_ERROR()));
         this.failPendingOutgoingTransfers();
         this.failPendingIncomingTransfer();
         this.callbacks.onClose();
@@ -346,15 +375,45 @@ export class PeerTransport {
     channel.onopen = async () => {
       this.startTransportStats();
       await this.inspectTransportStats();
+      this.resolvePendingPeerConnection();
       this.callbacks.onOpen();
       this.sendJson({ type: DATA_TYPE.profile, ...this.profile });
     };
     channel.onmessage = (event) => void this.handleData(event.data);
     channel.onclose = () => {
+      this.rejectPendingPeerConnection(new Error(DATA_CHANNEL_ERROR()));
       this.failPendingOutgoingTransfers();
       this.failPendingIncomingTransfer();
       this.callbacks.onClose();
     };
+  }
+
+  private waitForPeerConnection(peerId: string) {
+    this.rejectPendingPeerConnection(new Error(DATA_CHANNEL_ERROR()));
+    const connectionReady = new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        this.rejectPendingPeerConnection(new Error(DATA_CHANNEL_ERROR()));
+      }, PEER_CONNECTION_TIMEOUT_MS);
+      this.pendingPeerConnection = { peerId, resolve, reject, timeout };
+    });
+    void connectionReady.catch(() => undefined);
+    return connectionReady;
+  }
+
+  private resolvePendingPeerConnection() {
+    const pending = this.pendingPeerConnection;
+    if (!pending || pending.peerId !== this.peerId) return;
+    window.clearTimeout(pending.timeout);
+    this.pendingPeerConnection = undefined;
+    pending.resolve();
+  }
+
+  private rejectPendingPeerConnection(error: unknown) {
+    const pending = this.pendingPeerConnection;
+    if (!pending) return;
+    window.clearTimeout(pending.timeout);
+    this.pendingPeerConnection = undefined;
+    pending.reject(error instanceof Error ? error : new Error(DATA_CHANNEL_ERROR()));
   }
 
   private failPendingOutgoingTransfers() {
@@ -431,6 +490,12 @@ export class PeerTransport {
     if (signal.type === SIGNAL_TYPE.presence) {
       const presence = signal.payload as PresenceSignal;
       if (typeof presence.deviceId === 'string' && typeof presence.online === 'boolean') this.callbacks.onPresence(presence.deviceId, presence.online);
+      return;
+    }
+    if (signal.type === SIGNAL_TYPE.lanDevices) {
+      const payload = signal.payload as LanDevicesSignal;
+      const devices = Array.isArray(payload.devices) ? payload.devices.filter((device): device is LanDevice => Boolean(device) && typeof device === 'object' && typeof (device as LanDevice).deviceId === 'string' && typeof (device as LanDevice).nickname === 'string' && typeof (device as LanDevice).avatar === 'string') : [];
+      this.callbacks.onLanDevices(devices.map((device) => ({ ...device, online: true })));
       return;
     }
     if (!signal.from) return;
@@ -530,5 +595,10 @@ export class PeerTransport {
   private sendPresenceSubscription() {
     if (this.socket?.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify({ type: SIGNAL_TYPE.presenceWatch, payload: { deviceIds: this.presenceDeviceIds } }));
+  }
+
+  private sendSignalingProfile() {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify({ type: SIGNAL_TYPE.deviceProfile, payload: this.profile }));
   }
 }

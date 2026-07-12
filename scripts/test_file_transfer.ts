@@ -44,6 +44,8 @@ class FakeBufferedChannel implements BufferedDataChannelLike {
 async function run() {
   assertEqual(resolveFileChunkSize(false), P2P_FILE_CHUNK_SIZE);
   assertEqual(resolveFileChunkSize(true), RELAY_FILE_CHUNK_SIZE);
+  assertEqual(resolveFileChunkSize(false, RELAY_FILE_CHUNK_SIZE), RELAY_FILE_CHUNK_SIZE);
+  assertEqual(resolveFileChunkSize(false, 0), P2P_FILE_CHUNK_SIZE);
   assertEqual(resolveDataChannelBufferLimits(false).highWaterMark, P2P_BUFFER_HIGH_WATER_MARK);
   assertEqual(resolveDataChannelBufferLimits(false).lowThreshold, P2P_BUFFER_LOW_THRESHOLD);
   assertEqual(resolveDataChannelBufferLimits(true).highWaterMark, RELAY_BUFFER_HIGH_WATER_MARK);
