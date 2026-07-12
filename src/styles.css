@@ -202,8 +202,10 @@ header { height:64px; border-bottom:1px solid #ecede9; display:flex; align-items
 
   .app-shell--chat {
     position:fixed;
-    inset:0;
-    height:100dvh;
+    top:0;
+    right:0;
+    left:0;
+    height:var(--chat-viewport-height, 100dvh);
     min-height:0;
     overflow:hidden;
   }
@@ -226,5 +228,16 @@ header { height:64px; border-bottom:1px solid #ecede9; display:flex; align-items
 
   .composer {
     position:static;
+    align-self:stretch;
+    background:#fff;
+    padding-bottom:calc(14px + env(safe-area-inset-bottom));
+  }
+}
+
+@supports (-webkit-touch-callout:none) {
+  @media (max-width:760px) {
+    .composer-shell input:not([type=file]) {
+      font-size:16px;
+    }
   }
 }

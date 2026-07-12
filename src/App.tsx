@@ -25,6 +25,7 @@ const AUTO_JOIN_RETRY_DELAY_MS = 600;
 const NETWORK_RECOVERY_DELAY_MS = 900;
 const SIGNALING_UNAVAILABLE_ERROR = 'signaling unavailable';
 const PAIRING_CODE_LENGTH = 4;
+const CHAT_VIEWPORT_HEIGHT_CSS_VARIABLE = '--chat-viewport-height';
 type JoinOptions = { silentSignalError?: boolean };
 type JoinResult = 'success' | 'signaling-unavailable' | 'blocked' | 'pairing-error';
 type NavigatorConnectionLike = { addEventListener?: (type: 'change', listener: () => void) => void; removeEventListener?: (type: 'change', listener: () => void) => void };
@@ -90,6 +91,23 @@ export default function App() {
     mediaQuery.addEventListener('change', update);
     return () => mediaQuery.removeEventListener('change', update);
   }, []);
+
+  useEffect(() => {
+    if (!isMobile || view !== 'transfer') return;
+    const viewport = window.visualViewport;
+    const syncChatViewportHeight = () => {
+      const height = viewport?.height ?? window.innerHeight;
+      document.documentElement.style.setProperty(CHAT_VIEWPORT_HEIGHT_CSS_VARIABLE, `${height}px`);
+    };
+    syncChatViewportHeight();
+    viewport?.addEventListener('resize', syncChatViewportHeight);
+    viewport?.addEventListener('scroll', syncChatViewportHeight);
+    return () => {
+      viewport?.removeEventListener('resize', syncChatViewportHeight);
+      viewport?.removeEventListener('scroll', syncChatViewportHeight);
+      document.documentElement.style.removeProperty(CHAT_VIEWPORT_HEIGHT_CSS_VARIABLE);
+    };
+  }, [isMobile, view]);
 
   useEffect(() => {
     if (!toastMessage) return;

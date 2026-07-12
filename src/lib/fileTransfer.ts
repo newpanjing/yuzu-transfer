@@ -1,7 +1,18 @@
-export const P2P_FILE_CHUNK_SIZE = 64 * 1024;
-export const RELAY_FILE_CHUNK_SIZE = 16 * 1024;
-export const DATA_CHANNEL_BUFFER_LOW_THRESHOLD = 256 * 1024;
-export const DATA_CHANNEL_BUFFER_HIGH_WATER_MARK = 512 * 1024;
+const KIBIBYTE = 1024;
+const MEBIBYTE = KIBIBYTE * KIBIBYTE;
+
+export const P2P_FILE_CHUNK_SIZE = 128 * KIBIBYTE;
+export const RELAY_FILE_CHUNK_SIZE = 16 * KIBIBYTE;
+export const P2P_BUFFER_LOW_THRESHOLD = 4 * MEBIBYTE;
+export const P2P_BUFFER_HIGH_WATER_MARK = 8 * MEBIBYTE;
+export const RELAY_BUFFER_LOW_THRESHOLD = 256 * KIBIBYTE;
+export const RELAY_BUFFER_HIGH_WATER_MARK = 512 * KIBIBYTE;
+export const FILE_PROGRESS_UPDATE_INTERVAL_MS = 120;
+
+export type FileTransferBufferLimits = {
+  lowThreshold: number;
+  highWaterMark: number;
+};
 
 export type BufferedDataChannelLike = {
   bufferedAmount: number;
@@ -14,14 +25,24 @@ export function resolveFileChunkSize(relayActive: boolean) {
   return relayActive ? RELAY_FILE_CHUNK_SIZE : P2P_FILE_CHUNK_SIZE;
 }
 
-export function shouldWaitForBufferedAmount(bufferedAmount: number) {
-  return bufferedAmount > DATA_CHANNEL_BUFFER_HIGH_WATER_MARK;
+export function resolveDataChannelBufferLimits(relayActive: boolean): FileTransferBufferLimits {
+  return relayActive
+    ? { lowThreshold: RELAY_BUFFER_LOW_THRESHOLD, highWaterMark: RELAY_BUFFER_HIGH_WATER_MARK }
+    : { lowThreshold: P2P_BUFFER_LOW_THRESHOLD, highWaterMark: P2P_BUFFER_HIGH_WATER_MARK };
 }
 
-export function waitForDataChannelDrain(channel: BufferedDataChannelLike) {
-  channel.bufferedAmountLowThreshold = DATA_CHANNEL_BUFFER_LOW_THRESHOLD;
-  if (channel.bufferedAmount <= DATA_CHANNEL_BUFFER_LOW_THRESHOLD) return Promise.resolve();
+export function shouldWaitForBufferedAmount(bufferedAmount: number, highWaterMark: number) {
+  return bufferedAmount > highWaterMark;
+}
+
+export function waitForDataChannelDrain(channel: BufferedDataChannelLike, lowThreshold: number) {
+  channel.bufferedAmountLowThreshold = lowThreshold;
+  if (channel.bufferedAmount <= lowThreshold) return Promise.resolve();
   return new Promise<void>((resolve) => {
     channel.addEventListener('bufferedamountlow', () => resolve(), { once: true });
   });
+}
+
+export function shouldReportFileProgress(transferredBytes: number, totalBytes: number, lastReportedAt: number, now: number) {
+  return transferredBytes >= totalBytes || now - lastReportedAt >= FILE_PROGRESS_UPDATE_INTERVAL_MS;
 }

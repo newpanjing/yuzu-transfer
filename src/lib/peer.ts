@@ -1,7 +1,9 @@
 import { TRANSFER_STATUS } from '../constants';
 import type { DeviceProfile, TransferStatus } from '../types';
 import {
+  resolveDataChannelBufferLimits,
   resolveFileChunkSize,
+  shouldReportFileProgress,
   shouldWaitForBufferedAmount,
   waitForDataChannelDrain,
 } from './fileTransfer';
@@ -25,7 +27,7 @@ export type IncomingTransfer = { id: string; name: string; size: number; type: '
 type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onFileProgress: (item: IncomingTransfer) => void; onPeerProfile: (profile: DeviceProfile) => void; onPeerId: (deviceId: string) => void; onPresence: (deviceId: string, online: boolean) => void; onIncomingConnection: () => void; onRelayChange: (relayActive: boolean) => void; onError: (message: string) => void };
 type PresenceSignal = { deviceId?: unknown; online?: unknown };
 type Signal = { from?: string; type: string; payload: unknown };
-type ReceivedFile = { id: string; name: string; size: number; mime: string; chunks: ArrayBuffer[]; sentAt: string; startedAt: number; transferredBytes: number; transferStatus: TransferStatus };
+type ReceivedFile = { id: string; name: string; size: number; mime: string; chunks: ArrayBuffer[]; sentAt: string; startedAt: number; transferredBytes: number; lastProgressReportedAt: number; transferStatus: TransferStatus };
 type OutgoingTransfer = { id: string; file: File; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; startedAt: number; transferredBytes: number; transferStatus: TransferStatus; resume?: () => void };
 type CandidateReport = RTCStats & { candidateType?: string };
 type PairReport = RTCStats & { localCandidateId?: string; remoteCandidateId?: string; nominated?: boolean; selected?: boolean; state?: string };
@@ -185,13 +187,14 @@ export class PeerTransport {
     this.reportOutgoingTransfer(transfer);
     this.sendJson({ type: DATA_TYPE.fileStart, id: transfer.id, name: transfer.name, size: transfer.size, mime: transfer.file.type, sentAt: transfer.sentAt });
     const chunkSize = resolveFileChunkSize(this.relayActive);
+    const bufferLimits = resolveDataChannelBufferLimits(this.relayActive);
     for (let offset = 0; offset < transfer.file.size; offset += chunkSize) {
       if (!await this.waitForFileResume(transfer)) return;
       if (!this.channel || this.channel.readyState !== 'open') throw new Error(DATA_CHANNEL_ERROR());
       const buffer = await transfer.file.slice(offset, offset + chunkSize).arrayBuffer();
       this.channel.send(buffer);
-      if (shouldWaitForBufferedAmount(this.channel.bufferedAmount)) {
-        await waitForDataChannelDrain(this.channel);
+      if (shouldWaitForBufferedAmount(this.channel.bufferedAmount, bufferLimits.highWaterMark)) {
+        await waitForDataChannelDrain(this.channel, bufferLimits.lowThreshold);
       }
     }
     if (this.canFinishTransfer(transfer)) this.sendJson({ type: DATA_TYPE.fileEnd, id: transfer.id });
@@ -455,8 +458,12 @@ export class PeerTransport {
       this.receivedFile.chunks.push(chunk);
       this.receivedFile.transferredBytes += chunk.byteLength;
       if (this.receivedFile.transferStatus !== TRANSFER_STATUS.paused) this.receivedFile.transferStatus = TRANSFER_STATUS.transferring;
-      this.reportIncomingTransfer(this.receivedFile);
-      this.sendJson({ type: DATA_TYPE.fileProgress, id: this.receivedFile.id, transferredBytes: this.receivedFile.transferredBytes });
+      const now = Date.now();
+      if (shouldReportFileProgress(this.receivedFile.transferredBytes, this.receivedFile.size, this.receivedFile.lastProgressReportedAt, now)) {
+        this.receivedFile.lastProgressReportedAt = now;
+        this.reportIncomingTransfer(this.receivedFile);
+        this.sendJson({ type: DATA_TYPE.fileProgress, id: this.receivedFile.id, transferredBytes: this.receivedFile.transferredBytes });
+      }
       return;
     }
     const message = JSON.parse(data) as Record<string, string | number>;
@@ -469,7 +476,8 @@ export class PeerTransport {
       return;
     }
     if (message.type === DATA_TYPE.fileStart) {
-      this.receivedFile = { id: String(message.id), name: String(message.name), size: Number(message.size), mime: String(message.mime), chunks: [], sentAt: String(message.sentAt), startedAt: Date.now(), transferredBytes: 0, transferStatus: TRANSFER_STATUS.transferring };
+      const startedAt = Date.now();
+      this.receivedFile = { id: String(message.id), name: String(message.name), size: Number(message.size), mime: String(message.mime), chunks: [], sentAt: String(message.sentAt), startedAt, transferredBytes: 0, lastProgressReportedAt: startedAt, transferStatus: TRANSFER_STATUS.transferring };
       this.reportIncomingTransfer(this.receivedFile);
       return;
     }
