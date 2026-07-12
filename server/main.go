@@ -1,222 +1,27 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
-	"sync"
-	"time"
 
-	"github.com/gorilla/websocket"
+	"yuzu-transfer/internal/config"
+	"yuzu-transfer/internal/httpapi"
+	"yuzu-transfer/internal/store"
+	"yuzu-transfer/internal/turnservice"
 )
-
-const (
-	apiPrefix        = "/api/"
-	codeLength       = 4
-	codeLifetime     = 100 * 365 * 24 * time.Hour
-	relayMaxFileSize = 20 * 1024 * 1024
-)
-
-type pairing struct {
-	DeviceID  string    `json:"deviceId"`
-	ExpiresAt time.Time `json:"expiresAt"`
-}
-type pairingResponse struct {
-	Code      string    `json:"code"`
-	ExpiresAt time.Time `json:"expiresAt"`
-}
-type presenceResponse struct {
-	Devices []devicePresence `json:"devices"`
-}
-type devicePresence struct {
-	DeviceID string `json:"deviceId"`
-	Online   bool   `json:"online"`
-}
-type exchangeRequest struct {
-	Code     string `json:"code"`
-	DeviceID string `json:"deviceId"`
-}
-type exchangeResponse struct {
-	PeerDeviceID string `json:"peerDeviceId"`
-}
-type store struct {
-	sync.Mutex
-	pairs       map[string]pairing
-	deviceCodes map[string]string
-	clients     map[string]*websocket.Conn
-}
-
-type signalMessage struct {
-	To      string          `json:"to"`
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload"`
-}
-
-var wsUpgrader = websocket.Upgrader{CheckOrigin: func(_ *http.Request) bool { return true }}
 
 func main() {
-	data := &store{pairs: make(map[string]pairing), deviceCodes: make(map[string]string), clients: make(map[string]*websocket.Conn)}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/config", cors(func(w http.ResponseWriter, r *http.Request) {
-		respond(w, map[string]int64{"relayMaxFileSize": relayMaxFileSize})
-	}))
-	mux.HandleFunc("/api/pairings", cors(data.createPairing))
-	mux.HandleFunc("/api/pairings/exchange", cors(data.exchange))
-	mux.HandleFunc("/api/presence", cors(data.presence))
-	mux.HandleFunc("/api/signaling", data.signal)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	log.Println("Yuzu pairing service listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
-}
-
-func (s *store) signal(w http.ResponseWriter, r *http.Request) {
-	deviceID := r.URL.Query().Get("deviceId")
-	if deviceID == "" {
-		http.Error(w, "deviceId is required", http.StatusBadRequest)
-		return
-	}
-	connection, err := wsUpgrader.Upgrade(w, r, nil)
+	appConfig, err := config.Load()
 	if err != nil {
-		return
+		log.Fatal(err)
 	}
-	s.Lock()
-	if previous := s.clients[deviceID]; previous != nil {
-		_ = previous.Close()
+	if err := turnservice.Start(appConfig.Turn); err != nil {
+		log.Fatal(err)
 	}
-	s.clients[deviceID] = connection
-	s.Unlock()
-	defer func() {
-		s.Lock()
-		if s.clients[deviceID] == connection {
-			delete(s.clients, deviceID)
-		}
-		s.Unlock()
-		_ = connection.Close()
-	}()
-
-	for {
-		var message signalMessage
-		if err := connection.ReadJSON(&message); err != nil {
-			return
-		}
-		if message.To == "" || message.Type == "" {
-			continue
-		}
-		s.Lock()
-		target := s.clients[message.To]
-		s.Unlock()
-		if target != nil {
-			_ = target.WriteJSON(map[string]any{"from": deviceID, "type": message.Type, "payload": message.Payload})
-		}
-	}
-}
-
-func (s *store) createPairing(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var input struct {
-		DeviceID     string `json:"deviceId"`
-		ForceRefresh bool   `json:"forceRefresh"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || strings.TrimSpace(input.DeviceID) == "" {
-		http.Error(w, "deviceId is required", http.StatusBadRequest)
-		return
-	}
-	s.Lock()
-	defer s.Unlock()
-	if existingCode, ok := s.deviceCodes[input.DeviceID]; ok && !input.ForceRefresh {
-		respond(w, pairingResponse{Code: existingCode, ExpiresAt: s.pairs[existingCode].ExpiresAt})
-		return
-	}
-	if previousCode, ok := s.deviceCodes[input.DeviceID]; ok {
-		delete(s.pairs, previousCode)
-	}
-	code := s.newCode()
-	expiration := time.Now().Add(codeLifetime)
-	s.deviceCodes[input.DeviceID] = code
-	s.pairs[code] = pairing{DeviceID: input.DeviceID, ExpiresAt: expiration}
-	respond(w, pairingResponse{Code: code, ExpiresAt: expiration})
-}
-
-func (s *store) exchange(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var input exchangeRequest
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.DeviceID == "" || len(input.Code) != codeLength {
-		http.Error(w, "invalid pairing request", http.StatusBadRequest)
-		return
-	}
-	s.Lock()
-	defer s.Unlock()
-	entry, ok := s.pairs[input.Code]
-	if !ok {
-		http.Error(w, "pairing code expired or unavailable", http.StatusNotFound)
-		return
-	}
-	if entry.DeviceID == input.DeviceID {
-		http.Error(w, "cannot pair the same device", http.StatusBadRequest)
-		return
-	}
-	respond(w, exchangeResponse{PeerDeviceID: entry.DeviceID})
-}
-
-func (s *store) presence(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var input struct {
-		DeviceIDs []string `json:"deviceIds"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, "invalid presence request", http.StatusBadRequest)
-		return
-	}
-	s.Lock()
-	defer s.Unlock()
-	devices := make([]devicePresence, 0, len(input.DeviceIDs))
-	for _, deviceID := range input.DeviceIDs {
-		trimmed := strings.TrimSpace(deviceID)
-		if trimmed == "" {
-			continue
-		}
-		devices = append(devices, devicePresence{DeviceID: trimmed, Online: s.clients[trimmed] != nil})
-	}
-	respond(w, presenceResponse{Devices: devices})
-}
-
-func (s *store) newCode() string {
-	for {
-		bytes := make([]byte, codeLength)
-		_, _ = rand.Read(bytes)
-		code := ""
-		for _, b := range bytes {
-			code += fmt.Sprintf("%d", int(b)%10)
-		}
-		if _, exists := s.pairs[code]; !exists {
-			return code
-		}
-	}
-}
-func respond(w http.ResponseWriter, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(payload)
-}
-func cors(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next(w, r)
-	}
+	dataStore := store.New()
+	server := httpapi.New(appConfig, dataStore)
+	address := fmt.Sprintf(":%d", appConfig.AppPort)
+	log.Printf("Yuzu pairing service listening on %s", address)
+	log.Fatal(http.ListenAndServe(address, server.Mux()))
 }

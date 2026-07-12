@@ -1,11 +1,12 @@
 import { ArrowLeft, Download, File, Image, Paperclip, Send } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_PEER_AVATAR } from '../constants';
+import { formatMessageTime } from '../lib/date';
 import { createId } from '../lib/id';
 import { useI18n } from '../lib/i18n';
 import { AvatarBadge } from './AvatarBadge';
 import { ConversationMenu } from './ConversationMenu';
-import { FileSaveDialog } from './FileSaveDialog';
+import { saveTransferItem } from './FileSaveDialog';
 import { ImagePreviewDialog } from './ImagePreviewDialog';
 import { Toast } from './Toast';
 import type { PeerTransport } from '../lib/peer';
@@ -15,10 +16,10 @@ type Props = {
   title: string;
   avatar: string;
   blocked: boolean;
-  onRenameConversation: () => void;
   onDeleteConversation: () => void;
   onToggleBlocked: () => void;
   relayLimit: number;
+  relayActive: boolean;
   transport?: PeerTransport;
   connected: boolean;
   items: TransferItem[];
@@ -30,17 +31,17 @@ const MEBIBYTE = 1024 * 1024;
 const formatSize = (size: number) => size < MEBIBYTE ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / MEBIBYTE).toFixed(1)} MB`;
 const formatSpeed = (speedBytes = 0) => speedBytes < MEBIBYTE ? `${Math.max(1, Math.round(speedBytes / 1024))} KB/s` : `${(speedBytes / MEBIBYTE).toFixed(1)} MB/s`;
 
-export function TransferWorkspace({ title, avatar, blocked, onRenameConversation, onDeleteConversation, onToggleBlocked, relayLimit, transport, connected, items, onItemsChange, onBack }: Props) {
+export function TransferWorkspace({ title, avatar, blocked, onDeleteConversation, onToggleBlocked, relayLimit, relayActive, transport, connected, items, onItemsChange, onBack }: Props) {
   const { resolvedLanguage, t } = useI18n();
   const [message, setMessage] = useState('');
   const [notice, setNotice] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const [preview, setPreview] = useState<TransferItem>();
-  const [pendingSave, setPendingSave] = useState<TransferItem>();
   const [animatedItemId, setAnimatedItemId] = useState('');
   const input = useRef<HTMLInputElement>(null);
   const messageAreaRef = useRef<HTMLElement>(null);
   const latestItemIdRef = useRef('');
+  const composerDisabled = blocked || !connected;
 
   useEffect(() => {
     const latestItem = items.at(-1);
@@ -62,7 +63,6 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
   }, [notice]);
 
   const append = (item: TransferItem) => onItemsChange((current) => [...current.filter((currentItem) => currentItem.id !== item.id), item]);
-  const formatTime = (sentAt: string) => new Date(sentAt).toLocaleTimeString(resolvedLanguage, { hour: '2-digit', minute: '2-digit' });
   const formatDuration = (seconds = 0) => {
     const rounded = Math.max(0, Math.ceil(seconds));
     if (rounded < 60) return t('duration.seconds', { value: rounded });
@@ -93,7 +93,7 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
   const addFiles = async (selected: FileList | null) => {
     if (!selected || !requirePeerAvailable()) return;
     for (const file of Array.from(selected)) {
-      if (file.size > relayLimit) {
+      if (relayActive && file.size > relayLimit) {
         setNotice(t('error.relayLimit', { limit: formatSize(relayLimit) }));
         continue;
       }
@@ -117,9 +117,9 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
         <AvatarBadge avatarId={avatar || DEFAULT_PEER_AVATAR} online={connected && !blocked} className="peer-avatar" alt={title} />
         <div className="peer-summary">
           <div className="peer-title">{title}</div>
-          <div className="peer-subtitle">{t('workspace.sessionNotice')}</div>
+          <div className="peer-subtitle">{relayActive ? t('workspace.connection.relay') : t('workspace.connection.p2p')} · {t('workspace.sessionNotice')}</div>
         </div>
-        <ConversationMenu onRename={onRenameConversation} onToggleBlocked={onToggleBlocked} onDelete={onDeleteConversation} blocked={blocked} />
+        <ConversationMenu onToggleBlocked={onToggleBlocked} onDelete={onDeleteConversation} blocked={blocked} />
       </section>
 
       <section
@@ -139,9 +139,12 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
         )}
         <div className="message-list">
           {items.map((item) => item.text ? (
-            <article className={`text-message ${item.direction} ${animatedItemId === item.id ? 'message-pop' : ''}`} key={item.id}>{item.text}</article>
+            <div className={`message-entry ${item.direction}`} key={item.id}>
+              <article className={`text-message ${item.direction} ${animatedItemId === item.id ? 'message-pop' : ''}`}>{item.text}</article>
+              <time className="message-entry-time">{formatMessageTime(item.sentAt, resolvedLanguage)}</time>
+            </div>
           ) : (
-            <div className={`attachment-entry ${item.direction}`} key={item.id}>
+            <div className={`message-entry ${item.direction}`} key={item.id}>
               <article className={`file-message ${item.direction} ${item.expired ? 'file-message expired' : ''} ${animatedItemId === item.id ? 'message-pop' : ''}`}>
                 {item.objectUrl && item.type === 'image' ? (
                   <button className="image-thumbnail" onClick={() => setPreview(item)}>
@@ -160,12 +163,12 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
                   {item.progress !== undefined && item.progress < 1 && <span className="transfer-progress"><i style={{ width: `${Math.round(item.progress * 100)}%` }} />{Math.round(item.progress * 100)}%</span>}
                 </span>
                 {item.direction === 'incoming' && item.objectUrl && !item.expired && (
-                  <button className="attachment-download-button" onClick={() => setPendingSave(item)} aria-label={t('workspace.download')}>
+                  <button className="attachment-download-button" onClick={() => void saveTransferItem(item)} aria-label={t('workspace.download')}>
                     <Download size={16} />
                   </button>
                 )}
               </article>
-              <time className={`attachment-time ${item.direction}`}>{formatTime(item.sentAt)}</time>
+              <time className="message-entry-time">{formatMessageTime(item.sentAt, resolvedLanguage)}</time>
             </div>
           ))}
         </div>
@@ -173,16 +176,15 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
 
       <section className="composer">
         <input ref={input} hidden type="file" multiple onChange={(event) => void addFiles(event.target.files)} />
-        <div className="composer-shell">
-          <button className="icon-button" onClick={() => input.current?.click()} aria-label={t('workspace.pickFile')}><Paperclip size={20} /></button>
-          <input value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendText(); }} placeholder={blocked ? t('workspace.input.blocked') : connected ? t('workspace.input.connected') : t('workspace.input.offline')} disabled={blocked} />
-          <button className="send-button" onClick={sendText} aria-label={t('workspace.send')} disabled={blocked}><Send size={18} /></button>
+        <div className={composerDisabled ? 'composer-shell composer-shell--disabled' : 'composer-shell'}>
+          <button className="icon-button" onClick={() => input.current?.click()} aria-label={t('workspace.pickFile')} disabled={composerDisabled}><Paperclip size={20} /></button>
+          <input value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendText(); }} placeholder={t('workspace.input.placeholder')} disabled={composerDisabled} />
+          <button className="send-button" onClick={sendText} aria-label={t('workspace.send')} disabled={composerDisabled}><Send size={16} /></button>
         </div>
       </section>
 
       {notice && <Toast message={notice} />}
       {preview?.objectUrl && <ImagePreviewDialog src={preview.objectUrl} alt={preview.name} onClose={() => setPreview(undefined)} />}
-      {pendingSave && <FileSaveDialog item={pendingSave} onClose={() => setPendingSave(undefined)} />}
     </main>
   );
 }

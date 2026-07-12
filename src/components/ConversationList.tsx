@@ -1,4 +1,5 @@
 import { AvatarBadge } from './AvatarBadge';
+import { formatConversationTime } from '../lib/date';
 import { useI18n } from '../lib/i18n';
 import type { Conversation } from '../types';
 
@@ -10,7 +11,7 @@ type Props = {
 };
 
 export function ConversationList({ conversations, activeDeviceId, selected, onSelect }: Props) {
-  const { t } = useI18n();
+  const { resolvedLanguage, t } = useI18n();
 
   if (conversations.length === 0) {
     return <span className="empty-conversations">{t('sidebar.empty')}</span>;
@@ -19,14 +20,13 @@ export function ConversationList({ conversations, activeDeviceId, selected, onSe
   return (
     <div className="conversation-list">
       {conversations.map((conversation) => (
-        <button
-          key={conversation.deviceId}
-          className={conversation.deviceId === activeDeviceId && selected ? 'conversation-item selected' : 'conversation-item'}
-          onClick={() => onSelect(conversation.deviceId)}
-        >
+        <button key={conversation.deviceId} className={conversation.deviceId === activeDeviceId && selected ? 'conversation-item selected' : 'conversation-item'} onClick={() => onSelect(conversation.deviceId)}>
           <AvatarBadge avatarId={conversation.avatar} online={conversation.online && !conversation.blocked} className="conversation-avatar" alt={conversation.remark ?? conversation.nickname} />
-          <span>
-            <strong>{conversation.remark ?? conversation.nickname}</strong>
+          <span className="conversation-content">
+            <span className="conversation-row">
+              <strong>{conversation.remark ?? conversation.nickname}</strong>
+              <time className="conversation-time">{formatConversationTime(conversation.messages.at(-1)?.sentAt ?? conversation.lastConnectedAt, resolvedLanguage)}</time>
+            </span>
             <small>{conversation.blocked ? t('sidebar.preview.blocked') : conversation.messages.at(-1)?.text ?? conversation.messages.at(-1)?.name ?? t('sidebar.preview.connected')}</small>
           </span>
         </button>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BadgeCheck, ShieldCheck } from 'lucide-react';
+import { BadgeCheck } from 'lucide-react';
 import { AboutView } from './components/AboutView';
 import { Brand } from './components/Brand';
 import { ConnectionPanel } from './components/ConnectionPanel';
@@ -11,8 +11,8 @@ import { SettingsView } from './components/SettingsView';
 import { Sidebar } from './components/Sidebar';
 import { Toast } from './components/Toast';
 import { TransferWorkspace } from './components/TransferWorkspace';
-import { DEFAULT_PEER_AVATAR, DEFAULT_PEER_NICKNAME, DEFAULT_RELAY_LIMIT, PRESENCE_REFRESH_MS } from './constants';
-import { createPairing, exchangePairing, getPresence, getRelayLimit } from './lib/api';
+import { DEFAULT_ICE_SERVERS, DEFAULT_PEER_AVATAR, DEFAULT_PEER_NICKNAME, DEFAULT_RELAY_LIMIT, PRESENCE_REFRESH_MS } from './constants';
+import { createPairing, exchangePairing, getPresence, getRtcConfig } from './lib/api';
 import { loadConversations, saveConversations } from './lib/conversations';
 import { getAvatar, getDeviceId, getNickname, getStoredPairingCode, saveAvatar, saveNickname, savePairingCode } from './lib/device';
 import { translateNow, useI18n } from './lib/i18n';
@@ -47,13 +47,16 @@ export default function App() {
   const [error, setError] = useState('');
   const [pairingError, setPairingError] = useState('');
   const [relayLimit, setRelayLimit] = useState(DEFAULT_RELAY_LIMIT);
+  const [iceServers, setIceServers] = useState<RTCIceServer[]>(DEFAULT_ICE_SERVERS);
   const [transport, setTransport] = useState<PeerTransport>();
   const [connected, setConnected] = useState(false);
+  const [relayActive, setRelayActive] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const [conversations, setConversations] = useState<Conversation[]>(restoredSession.conversations);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(restoredSession.selectedDeviceId);
   const activePeerRef = useRef<string | null>(null);
   const autoJoinCode = useRef('');
+  const autoJoinHandled = useRef(false);
   const conversationsRef = useRef(conversations);
   const incomingConnectionRef = useRef(false);
 
@@ -116,7 +119,7 @@ export default function App() {
         return nextPresence ? { ...conversation, online: nextPresence.online } : conversation;
       }));
     } catch {
-      setError(t('error.presence'));
+      if (view !== 'connect') setToastMessage(t('error.presence'));
     }
   };
 
@@ -136,7 +139,10 @@ export default function App() {
 
   useEffect(() => {
     void refreshPairingCode();
-    void getRelayLimit().then((data) => setRelayLimit(data.relayMaxFileSize)).catch(() => undefined);
+    void getRtcConfig().then((data) => {
+      setRelayLimit(data.relayMaxFileSize);
+      setIceServers(data.iceServers.length > 0 ? data.iceServers : DEFAULT_ICE_SERVERS);
+    }).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -153,6 +159,7 @@ export default function App() {
       },
       onClose: () => {
         setConnected(false);
+        setRelayActive(false);
         const peerDeviceId = activePeerRef.current;
         if (peerDeviceId) setPeerOnline(peerDeviceId, false);
       },
@@ -172,12 +179,13 @@ export default function App() {
       onIncomingConnection: () => {
         incomingConnectionRef.current = true;
       },
+      onRelayChange: setRelayActive,
       onError: setError,
-    });
+    }, iceServers);
     instance.connectSignaling();
     setTransport(instance);
     return () => instance.close();
-  }, [deviceId]);
+  }, [deviceId, iceServers]);
 
   useEffect(() => {
     transport?.updateProfile(profile);
@@ -203,6 +211,7 @@ export default function App() {
     if (code?.length === 4) {
       setJoinCode(code);
       autoJoinCode.current = code;
+      autoJoinHandled.current = false;
       url.searchParams.delete('code');
       const nextUrl = `${url.pathname}${url.search}${url.hash}`;
       window.history.replaceState({}, '', nextUrl);
@@ -242,7 +251,12 @@ export default function App() {
     if (!transport) return;
     setBusy(true);
     setError('');
+    setPairingError('');
     try {
+      if (!await transport.waitForSignalingReady()) {
+        setError(t('error.signalingRequired'));
+        return;
+      }
       const result = await exchangePairing(code, deviceId);
       if (findConversation(result.peerDeviceId)?.blocked) {
         setPairingError(t('error.blockedJoin'));
@@ -250,7 +264,11 @@ export default function App() {
       }
       await transport.start(result.peerDeviceId);
       setView('transfer');
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === 'signaling unavailable') {
+        setError(t('error.signalingRequired'));
+        return;
+      }
       setPairingError(t('error.pairing'));
     } finally {
       setBusy(false);
@@ -258,10 +276,12 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (autoJoinCode.current && transport) {
-      void join(autoJoinCode.current);
+    if (!autoJoinCode.current || !transport || autoJoinHandled.current) return;
+    autoJoinHandled.current = true;
+    const code = autoJoinCode.current;
+    void join(code).finally(() => {
       autoJoinCode.current = '';
-    }
+    });
   }, [transport]);
 
   const saveProfile = ({ nickname: nextNickname, avatar: nextAvatar }: { nickname: string; avatar: string }) => {
@@ -300,14 +320,6 @@ export default function App() {
     });
   };
 
-  const renameConversation = () => {
-    if (!selectedDeviceId) return;
-    const currentName = getConversationTitle(findConversation(selectedDeviceId), t('conversation.defaultPeer'));
-    const nextName = window.prompt(t('conversation.renamePrompt'), currentName)?.trim();
-    if (!nextName) return;
-    updateConversation(selectedDeviceId, (conversation) => ({ ...conversation, remark: nextName }));
-  };
-
   const selectedConversation = conversations.find((conversation) => conversation.deviceId === selectedDeviceId);
   const selectedMessages = selectedConversation?.messages ?? [];
   const isSelectedConnected = Boolean(selectedDeviceId && connected && activePeerRef.current === selectedDeviceId && !selectedConversation?.blocked);
@@ -338,5 +350,8 @@ export default function App() {
 
   const hideGlobalChrome = isMobile && view === 'transfer';
 
-  return <div className="app-shell">{!hideGlobalChrome && <header><Brand /><div className="header-actions"><LanguageSwitcher /><div className="header-meta"><ShieldCheck size={17} /> {t('header.meta')}</div></div></header>}<div className="app-body">{!hideGlobalChrome && <Sidebar conversations={conversations} activeDeviceId={selectedDeviceId} activeView={view} onConnect={() => { setTransitionDirection('back'); setView('connect'); }} onSettings={() => { setTransitionDirection('forward'); setView('settings'); }} onAbout={() => { setTransitionDirection('forward'); setView('about'); }} onSelect={openTransferView} />}<div key={`${view}-${selectedDeviceId ?? 'none'}`} className={`view-frame view-frame--${transitionDirection}`}>{view === 'connect' ? <main className="connect-view connect-view--minimal"><ConnectionPanel pairingCode={pairingCode} qrValue={qrValue} invitationText={invitationText} joinCode={joinCode} onJoinCodeChange={setJoinCode} onJoin={() => void join()} onRefresh={() => void refreshPairingCode(true)} busy={busy} />{error && <div className="error-banner">{error}</div>}</main> : view === 'conversations' ? <ConversationsView conversations={conversations} activeDeviceId={selectedDeviceId} onSelect={openTransferView} /> : view === 'settings' ? <SettingsView nickname={nickname} avatar={avatar} onSave={saveProfile} /> : view === 'about' ? <AboutView githubUrl={GITHUB_URL} /> : <TransferWorkspace title={getConversationTitle(selectedConversation, t('conversation.defaultPeer'))} avatar={selectedConversation?.avatar ?? DEFAULT_PEER_AVATAR} blocked={selectedConversation?.blocked ?? false} onRenameConversation={renameConversation} onDeleteConversation={deleteConversation} onToggleBlocked={toggleBlockedConversation} relayLimit={relayLimit} transport={transport} connected={isSelectedConnected} items={selectedMessages} onItemsChange={(next) => { if (!selectedDeviceId) return; updateConversation(selectedDeviceId, (conversation) => ({ ...conversation, messages: typeof next === 'function' ? next(conversation.messages) : next })); }} onBack={backFromTransfer} />}</div></div>{!hideGlobalChrome && <MobileBottomNav activeView={view} hasConversations={conversations.length > 0} onConnect={() => { setTransitionDirection('back'); setView('connect'); }} onConversation={openConversationView} onSettings={() => { setTransitionDirection('forward'); setView('settings'); }} onAbout={() => { setTransitionDirection('forward'); setView('about'); }} />}{toastMessage && <Toast message={toastMessage} />}{pairingError && <ErrorDialog message={pairingError} onClose={() => setPairingError('')} />}</div>;
+  const showTopHeader = isMobile && !hideGlobalChrome;
+  const appShellClassName = hideGlobalChrome ? 'app-shell app-shell--chat' : !isMobile ? 'app-shell app-shell--desktop' : 'app-shell';
+
+  return <div className={appShellClassName}>{showTopHeader && <header><Brand /><div className="header-actions"><LanguageSwitcher /></div></header>}<div className={hideGlobalChrome ? 'app-body app-body--chat' : 'app-body'}>{!hideGlobalChrome && <Sidebar conversations={conversations} activeDeviceId={selectedDeviceId} activeView={view} onConnect={() => { setTransitionDirection('back'); setView('connect'); }} onSettings={() => { setTransitionDirection('forward'); setView('settings'); }} onSelect={openTransferView} />}<div key={`${view}-${selectedDeviceId ?? 'none'}`} className={hideGlobalChrome ? `view-frame view-frame--chat view-frame--${transitionDirection}` : `view-frame view-frame--${transitionDirection}`}>{view === 'connect' ? <main className="connect-view connect-view--minimal"><ConnectionPanel pairingCode={pairingCode} qrValue={qrValue} invitationText={invitationText} joinCode={joinCode} onJoinCodeChange={setJoinCode} onJoin={() => void join()} onRefresh={() => void refreshPairingCode(true)} busy={busy} />{error && <div className="error-banner">{error}</div>}</main> : view === 'conversations' ? <ConversationsView conversations={conversations} activeDeviceId={selectedDeviceId} onSelect={openTransferView} /> : view === 'settings' ? <SettingsView nickname={nickname} avatar={avatar} onOpenAbout={() => { setTransitionDirection('forward'); setView('about'); }} onSave={saveProfile} /> : view === 'about' ? <AboutView githubUrl={GITHUB_URL} onBack={() => { setTransitionDirection('back'); setView('settings'); }} /> : <TransferWorkspace title={getConversationTitle(selectedConversation, t('conversation.defaultPeer'))} avatar={selectedConversation?.avatar ?? DEFAULT_PEER_AVATAR} blocked={selectedConversation?.blocked ?? false} onDeleteConversation={deleteConversation} onToggleBlocked={toggleBlockedConversation} relayLimit={relayLimit} relayActive={relayActive} transport={transport} connected={isSelectedConnected} items={selectedMessages} onItemsChange={(next) => { if (!selectedDeviceId) return; updateConversation(selectedDeviceId, (conversation) => ({ ...conversation, messages: typeof next === 'function' ? next(conversation.messages) : next })); }} onBack={backFromTransfer} />}</div></div>{!hideGlobalChrome && <MobileBottomNav activeView={view} hasConversations={conversations.length > 0} onConnect={() => { setTransitionDirection('back'); setView('connect'); }} onConversation={openConversationView} onSettings={() => { setTransitionDirection('forward'); setView('settings'); }} />}{toastMessage && <Toast message={toastMessage} />}{pairingError && <ErrorDialog message={pairingError} onClose={() => setPairingError('')} />}</div>;
 }

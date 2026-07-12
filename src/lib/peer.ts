@@ -1,20 +1,26 @@
 import type { DeviceProfile } from '../types';
 import { translateNow } from './i18n';
+import { buildSignalingUrl } from './runtime';
 
 const DATA_CHANNEL_NAME = 'yuzu-transfer';
 const FILE_CHUNK_SIZE = 64 * 1024;
 const SIGNAL_TYPE = { offer: 'offer', answer: 'answer', candidate: 'candidate' } as const;
 const DATA_TYPE = { profile: 'profile', text: 'text', fileStart: 'file-start', fileEnd: 'file-end' } as const;
 const CONNECTION_STATE = { failed: 'failed', disconnected: 'disconnected', closed: 'closed' } as const;
-const DEVELOPMENT_PORT = '5173';
-const SIGNALING_PORT = ':8080';
+const CANDIDATE_PAIR_TYPE = 'candidate-pair';
+const TRANSPORT_STAT_TYPE = 'transport';
+const RELAY_CANDIDATE_TYPE = 'relay';
+const STATS_POLL_INTERVAL_MS = 2500;
 const SIGNALING_ERROR = () => translateNow('peer.signaling');
 const DATA_CHANNEL_ERROR = () => translateNow('peer.dataChannel');
 
 export type IncomingTransfer = { id: string; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; direction: 'incoming' | 'outgoing'; text?: string; progress?: number; transferredBytes?: number; speedBytes?: number; remainingSeconds?: number };
-type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onFileProgress: (item: IncomingTransfer) => void; onPeerProfile: (profile: DeviceProfile) => void; onPeerId: (deviceId: string) => void; onIncomingConnection: () => void; onError: (message: string) => void };
+type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onFileProgress: (item: IncomingTransfer) => void; onPeerProfile: (profile: DeviceProfile) => void; onPeerId: (deviceId: string) => void; onIncomingConnection: () => void; onRelayChange: (relayActive: boolean) => void; onError: (message: string) => void };
 type Signal = { from: string; type: string; payload: RTCSessionDescriptionInit | RTCIceCandidateInit };
 type ReceivedFile = { id: string; name: string; size: number; mime: string; chunks: ArrayBuffer[]; sentAt: string; startedAt: number; transferredBytes: number };
+type CandidateReport = RTCStats & { candidateType?: string };
+type PairReport = RTCStats & { localCandidateId?: string; remoteCandidateId?: string; nominated?: boolean; selected?: boolean; state?: string };
+type TransportReport = RTCStats & { selectedCandidatePairId?: string };
 
 function buildTransferMetrics(transferredBytes: number, totalBytes: number, startedAt: number) {
   const progress = totalBytes === 0 ? 1 : Math.min(transferredBytes / totalBytes, 1);
@@ -34,17 +40,16 @@ export class PeerTransport {
   private signalingReady?: Promise<void>;
   private signalingFailed = false;
   private closed = false;
+  private relayActive = false;
+  private transportStatsTimer?: number;
   private profile: DeviceProfile;
 
-  constructor(private readonly deviceId: string, profile: DeviceProfile, private readonly callbacks: Callbacks) {
+  constructor(private readonly deviceId: string, profile: DeviceProfile, private readonly callbacks: Callbacks, private readonly iceServers: RTCIceServer[]) {
     this.profile = profile;
   }
 
   connectSignaling() {
-    const isDevelopment = location.port === DEVELOPMENT_PORT;
-    const port = isDevelopment ? SIGNALING_PORT : location.port ? `:${location.port}` : '';
-    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    this.socket = new WebSocket(`${scheme}//${location.hostname}${port}/api/signaling?deviceId=${encodeURIComponent(this.deviceId)}`);
+    this.socket = new WebSocket(buildSignalingUrl(this.deviceId));
     this.signalingReady = new Promise((resolve) => {
       this.socket!.onopen = () => resolve();
       this.socket!.onerror = () => {
@@ -56,9 +61,13 @@ export class PeerTransport {
     this.socket.onmessage = (event) => void this.handleSignal(JSON.parse(event.data) as Signal);
   }
 
-  async start(peerId: string) {
+  async waitForSignalingReady() {
     await this.signalingReady;
-    if (this.signalingFailed || this.socket?.readyState !== WebSocket.OPEN) throw new Error('signaling unavailable');
+    return !this.signalingFailed && this.socket?.readyState === WebSocket.OPEN;
+  }
+
+  async start(peerId: string) {
+    if (!await this.waitForSignalingReady()) throw new Error('signaling unavailable');
     this.disconnectPeer();
     this.peerId = peerId;
     this.callbacks.onPeerId(peerId);
@@ -101,6 +110,8 @@ export class PeerTransport {
   }
 
   disconnectPeer() {
+    this.stopTransportStats();
+    this.updateRelayState(false);
     this.channel?.close();
     this.channel = undefined;
     this.peer?.close();
@@ -115,7 +126,7 @@ export class PeerTransport {
   }
 
   private createPeer() {
-    const peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    const peer = new RTCPeerConnection({ iceServers: this.iceServers });
     peer.onicecandidate = (event) => {
       if (event.candidate) this.sendSignal(SIGNAL_TYPE.candidate, event.candidate.toJSON());
     };
@@ -134,12 +145,65 @@ export class PeerTransport {
 
   private bindChannel(channel: RTCDataChannel) {
     channel.binaryType = 'arraybuffer';
-    channel.onopen = () => {
+    channel.onopen = async () => {
+      this.startTransportStats();
+      await this.inspectTransportStats();
       this.callbacks.onOpen();
       this.sendJson({ type: DATA_TYPE.profile, ...this.profile });
     };
     channel.onmessage = (event) => void this.handleData(event.data);
     channel.onclose = () => this.callbacks.onClose();
+  }
+
+  private startTransportStats() {
+    this.stopTransportStats();
+    void this.inspectTransportStats();
+    this.transportStatsTimer = window.setInterval(() => {
+      void this.inspectTransportStats();
+    }, STATS_POLL_INTERVAL_MS);
+  }
+
+  private stopTransportStats() {
+    if (!this.transportStatsTimer) return;
+    window.clearInterval(this.transportStatsTimer);
+    this.transportStatsTimer = undefined;
+  }
+
+  private updateRelayState(relayActive: boolean) {
+    if (this.relayActive === relayActive) return;
+    this.relayActive = relayActive;
+    this.callbacks.onRelayChange(relayActive);
+  }
+
+  private async inspectTransportStats() {
+    if (!this.peer) return;
+    try {
+      const stats = await this.peer.getStats();
+      const selectedPair = this.findSelectedCandidatePair(stats);
+      if (!selectedPair) return;
+      const localCandidate = selectedPair.localCandidateId ? stats.get(selectedPair.localCandidateId) as CandidateReport | undefined : undefined;
+      const remoteCandidate = selectedPair.remoteCandidateId ? stats.get(selectedPair.remoteCandidateId) as CandidateReport | undefined : undefined;
+      const relayActive = localCandidate?.candidateType === RELAY_CANDIDATE_TYPE || remoteCandidate?.candidateType === RELAY_CANDIDATE_TYPE;
+      this.updateRelayState(Boolean(relayActive));
+    } catch {
+      return;
+    }
+  }
+
+  private findSelectedCandidatePair(stats: RTCStatsReport) {
+    for (const report of stats.values()) {
+      if (report.type !== TRANSPORT_STAT_TYPE) continue;
+      const transportReport = report as TransportReport;
+      if (!transportReport.selectedCandidatePairId) continue;
+      const selectedPair = stats.get(transportReport.selectedCandidatePairId);
+      if (selectedPair) return selectedPair as PairReport;
+    }
+    for (const report of stats.values()) {
+      if (report.type !== CANDIDATE_PAIR_TYPE) continue;
+      const pairReport = report as PairReport;
+      if (pairReport.nominated || pairReport.selected || pairReport.state === 'succeeded') return pairReport;
+    }
+    return undefined;
   }
 
   private async handleSignal(signal: Signal) {
