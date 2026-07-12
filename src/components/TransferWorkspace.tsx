@@ -1,4 +1,4 @@
-import { ArrowLeft, File, Image, Paperclip, Send } from 'lucide-react';
+import { ArrowLeft, Download, File, Image, Paperclip, Send } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_PEER_AVATAR } from '../constants';
 import { createId } from '../lib/id';
@@ -39,17 +39,8 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
   const [pendingSave, setPendingSave] = useState<TransferItem>();
   const [animatedItemId, setAnimatedItemId] = useState('');
   const input = useRef<HTMLInputElement>(null);
-  const promptedFiles = useRef(new Set<string>());
   const messageAreaRef = useRef<HTMLElement>(null);
   const latestItemIdRef = useRef('');
-
-  useEffect(() => {
-    const received = items.find((item) => item.direction === 'incoming' && item.objectUrl && item.progress === 1 && !promptedFiles.current.has(item.id));
-    if (received) {
-      promptedFiles.current.add(received.id);
-      setPendingSave(received);
-    }
-  }, [items]);
 
   useEffect(() => {
     const latestItem = items.at(-1);
@@ -79,6 +70,7 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
     const remainder = rounded % 60;
     return t('duration.minutes', { minutes, seconds: remainder });
   };
+  const formatElapsed = (seconds = 0) => formatDuration(seconds);
 
   const requirePeerAvailable = () => {
     if (blocked) {
@@ -149,26 +141,32 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
           {items.map((item) => item.text ? (
             <article className={`text-message ${item.direction} ${animatedItemId === item.id ? 'message-pop' : ''}`} key={item.id}>{item.text}</article>
           ) : (
-            <article className={`file-message ${item.direction} ${item.expired ? 'file-message expired' : ''} ${animatedItemId === item.id ? 'message-pop' : ''}`} key={item.id}>
-              {item.objectUrl && item.type === 'image' ? (
-                <button className="image-thumbnail" onClick={() => setPreview(item)}>
-                  <img src={item.objectUrl} alt={item.name} />
-                </button>
-              ) : (
-                <span className={item.type === 'image' ? 'file-type image' : 'file-type'}>
-                  {item.type === 'image' ? <Image size={21} /> : <File size={21} />}
+            <div className={`attachment-entry ${item.direction}`} key={item.id}>
+              <article className={`file-message ${item.direction} ${item.expired ? 'file-message expired' : ''} ${animatedItemId === item.id ? 'message-pop' : ''}`}>
+                {item.objectUrl && item.type === 'image' ? (
+                  <button className="image-thumbnail" onClick={() => setPreview(item)}>
+                    <img src={item.objectUrl} alt={item.name} />
+                  </button>
+                ) : (
+                  <span className={item.type === 'image' ? 'file-type image' : 'file-type'}>
+                    {item.type === 'image' ? <Image size={21} /> : <File size={21} />}
+                  </span>
+                )}
+                <span>
+                  <strong>{item.name}</strong>
+                  <small>{formatSize(item.size)}</small>
+                  {item.expired && <em className="expired-hint">{item.type === 'image' ? t('workspace.imageExpired') : t('workspace.fileExpired')}</em>}
+                  {item.progress !== undefined && item.progress < 1 && <small className="transfer-meta">{formatSize(item.transferredBytes ?? 0)} / {formatSize(item.size)} · {formatSpeed(item.speedBytes)} · {formatElapsed(item.elapsedSeconds)}</small>}
+                  {item.progress !== undefined && item.progress < 1 && <span className="transfer-progress"><i style={{ width: `${Math.round(item.progress * 100)}%` }} />{Math.round(item.progress * 100)}%</span>}
                 </span>
-              )}
-              <span>
-                <strong>{item.name}</strong>
-                <small>{formatSize(item.size)}</small>
-                {item.expired && <em className="expired-hint">{item.type === 'image' ? t('workspace.imageExpired') : t('workspace.fileExpired')}</em>}
-                {item.progress !== undefined && <small className="transfer-meta">{formatSize(item.transferredBytes ?? 0)} / {formatSize(item.size)} · {formatSpeed(item.speedBytes)} · {item.progress >= 1 ? t('workspace.completed') : t('workspace.remaining', { time: formatDuration(item.remainingSeconds) })}</small>}
-                {item.progress !== undefined && item.progress < 1 && <span className="transfer-progress"><i style={{ width: `${Math.round(item.progress * 100)}%` }} />{Math.round(item.progress * 100)}%</span>}
-              </span>
-              {item.objectUrl && item.type === 'file' && <a href={item.objectUrl} download={item.name}>{t('workspace.download')}</a>}
-              <time>{formatTime(item.sentAt)}</time>
-            </article>
+                {item.direction === 'incoming' && item.objectUrl && !item.expired && (
+                  <button className="attachment-download-button" onClick={() => setPendingSave(item)} aria-label={t('workspace.download')}>
+                    <Download size={16} />
+                  </button>
+                )}
+              </article>
+              <time className={`attachment-time ${item.direction}`}>{formatTime(item.sentAt)}</time>
+            </div>
           ))}
         </div>
       </section>

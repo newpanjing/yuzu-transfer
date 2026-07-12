@@ -22,7 +22,7 @@ function buildTransferMetrics(transferredBytes: number, totalBytes: number, star
   const speedBytes = transferredBytes / elapsedSeconds;
   const remainingBytes = Math.max(totalBytes - transferredBytes, 0);
   const remainingSeconds = speedBytes > 0 && remainingBytes > 0 ? remainingBytes / speedBytes : 0;
-  return { progress, transferredBytes, speedBytes, remainingSeconds };
+  return { progress, transferredBytes, speedBytes, remainingSeconds, elapsedSeconds };
 }
 
 export class PeerTransport {

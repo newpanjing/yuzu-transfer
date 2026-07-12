@@ -4,7 +4,7 @@ import type { Conversation, TransferItem } from '../types';
 
 function restoreTransferItem(item: TransferItem): TransferItem {
   if (!item.objectUrl) return item;
-  return { ...item, objectUrl: undefined, expired: true, progress: item.progress === undefined ? undefined : 1 };
+  return { ...item, objectUrl: undefined, expired: true, progress: item.progress === undefined ? undefined : 1, elapsedSeconds: undefined };
 }
 
 export function loadConversations(): Conversation[] {
