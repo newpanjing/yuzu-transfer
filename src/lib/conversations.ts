@@ -8,9 +8,10 @@ function restoreTransferItem(item: TransferItem): TransferItem {
 
 export function loadConversations(): Conversation[] {
   try {
-    return (JSON.parse(localStorage.getItem(STORAGE_KEYS.conversations) ?? '[]') as Array<Partial<Conversation> & Pick<Conversation, 'deviceId'>>).map((conversation) => ({
+    return (JSON.parse(sessionStorage.getItem(STORAGE_KEYS.conversations) ?? '[]') as Array<Partial<Conversation> & Pick<Conversation, 'deviceId'>>).map((conversation) => ({
       deviceId: conversation.deviceId,
       nickname: conversation.nickname ?? DEFAULT_PEER_NICKNAME,
+      remark: conversation.remark,
       avatar: conversation.avatar ?? DEFAULT_PEER_AVATAR,
       online: conversation.online ?? false,
       blocked: conversation.blocked ?? false,
@@ -22,5 +23,5 @@ export function loadConversations(): Conversation[] {
 }
 
 export function saveConversations(conversations: Conversation[]) {
-  localStorage.setItem(STORAGE_KEYS.conversations, JSON.stringify(conversations));
+  sessionStorage.setItem(STORAGE_KEYS.conversations, JSON.stringify(conversations));
 }

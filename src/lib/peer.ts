@@ -11,7 +11,7 @@ const SIGNALING_ERROR = '信令连接失败，请检查服务是否可用。';
 const DATA_CHANNEL_ERROR = '数据通道尚未连接';
 
 export type IncomingTransfer = { id: string; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; direction: 'incoming' | 'outgoing'; text?: string; progress?: number; transferredBytes?: number; speedBytes?: number; remainingSeconds?: number };
-type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onFileProgress: (item: IncomingTransfer) => void; onPeerProfile: (profile: DeviceProfile) => void; onPeerId: (deviceId: string) => void; onError: (message: string) => void };
+type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onFileProgress: (item: IncomingTransfer) => void; onPeerProfile: (profile: DeviceProfile) => void; onPeerId: (deviceId: string) => void; onIncomingConnection: () => void; onError: (message: string) => void };
 type Signal = { from: string; type: string; payload: RTCSessionDescriptionInit | RTCIceCandidateInit };
 type ReceivedFile = { id: string; name: string; size: number; mime: string; chunks: ArrayBuffer[]; sentAt: string; startedAt: number; transferredBytes: number };
 
@@ -145,6 +145,7 @@ export class PeerTransport {
     this.peerId = signal.from;
     this.callbacks.onPeerId(signal.from);
     if (signal.type === SIGNAL_TYPE.offer) {
+      this.callbacks.onIncomingConnection();
       this.disconnectPeer();
       const peer = this.createPeer();
       await peer.setRemoteDescription(signal.payload as RTCSessionDescriptionInit);

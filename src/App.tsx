@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { BadgeCheck, Monitor, ShieldCheck } from 'lucide-react';
+import { AboutView } from './components/AboutView';
 import { Brand } from './components/Brand';
 import { ConnectionPanel } from './components/ConnectionPanel';
 import { ErrorDialog } from './components/ErrorDialog';
+import { SettingsView } from './components/SettingsView';
 import { Sidebar } from './components/Sidebar';
+import { Toast } from './components/Toast';
 import { TransferWorkspace } from './components/TransferWorkspace';
 import { DEFAULT_PEER_AVATAR, DEFAULT_PEER_NICKNAME, DEFAULT_RELAY_LIMIT, PRESENCE_REFRESH_MS } from './constants';
 import { createPairing, exchangePairing, getPresence, getRelayLimit } from './lib/api';
@@ -18,9 +21,16 @@ const SIGNALING_REQUIRED_ERROR = '直连服务尚未就绪，请稍后重试。'
 const BLOCKED_JOIN_ERROR = '该设备会话已被屏蔽，解除屏蔽后才能连接。';
 const CONNECT_ERROR = '当前无法连接该设备，请稍后重试。';
 const SERVER_ERROR = '配对服务暂不可用，请确认 Go 服务已启动。';
+const GITHUB_URL = 'https://github.com/newpanjing/yuzu-transfer';
+const INCOMING_JOIN_TOAST = '有设备已通过验证码加入。';
 
 function createConversation(deviceId: string): Conversation {
   return { deviceId, nickname: DEFAULT_PEER_NICKNAME, avatar: DEFAULT_PEER_AVATAR, online: false, blocked: false, messages: [], lastConnectedAt: new Date().toISOString() };
+}
+
+function getConversationTitle(conversation?: Conversation) {
+  if (!conversation) return DEFAULT_PEER_NICKNAME;
+  return conversation.remark ?? conversation.nickname;
 }
 
 export default function App() {
@@ -36,13 +46,21 @@ export default function App() {
   const [relayLimit, setRelayLimit] = useState(DEFAULT_RELAY_LIMIT);
   const [transport, setTransport] = useState<PeerTransport>();
   const [connected, setConnected] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
   const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const activePeerRef = useRef<string | null>(null);
   const autoJoinCode = useRef('');
   const conversationsRef = useRef(conversations);
+  const incomingConnectionRef = useRef(false);
 
   const profile: DeviceProfile = { nickname, avatar };
+
+  useEffect(() => {
+    if (!toastMessage) return;
+    const timer = window.setTimeout(() => setToastMessage(''), 2600);
+    return () => window.clearTimeout(timer);
+  }, [toastMessage]);
 
   const updateConversation = (targetDeviceId: string, update: (conversation: Conversation) => Conversation) => {
     setConversations((current) => {
@@ -116,6 +134,10 @@ export default function App() {
         setView('transfer');
         const peerDeviceId = activePeerRef.current;
         if (peerDeviceId) setPeerOnline(peerDeviceId, true);
+        if (incomingConnectionRef.current) {
+          setToastMessage(INCOMING_JOIN_TOAST);
+          incomingConnectionRef.current = false;
+        }
       },
       onClose: () => {
         setConnected(false);
@@ -134,6 +156,9 @@ export default function App() {
           avatar: nextProfile.avatar || conversation.avatar,
           online: true,
         }));
+      },
+      onIncomingConnection: () => {
+        incomingConnectionRef.current = true;
       },
       onError: setError,
     });
@@ -258,11 +283,19 @@ export default function App() {
     });
   };
 
+  const renameConversation = () => {
+    if (!selectedDeviceId) return;
+    const currentName = getConversationTitle(findConversation(selectedDeviceId));
+    const nextName = window.prompt('设置会话名称', currentName)?.trim();
+    if (!nextName) return;
+    updateConversation(selectedDeviceId, (conversation) => ({ ...conversation, remark: nextName }));
+  };
+
   const selectedConversation = conversations.find((conversation) => conversation.deviceId === selectedDeviceId);
   const selectedMessages = selectedConversation?.messages ?? [];
   const isSelectedConnected = Boolean(selectedDeviceId && connected && activePeerRef.current === selectedDeviceId && !selectedConversation?.blocked);
   const qrValue = `${location.origin}?code=${pairingCode}`;
   const invitationText = `邀请您使用柚子快传：${qrValue}`;
 
-  return <div className="app-shell"><header><Brand /><div className="header-meta"><ShieldCheck size={17} /> 不登录 · 不存文件 · 不留记录</div></header><div className="app-body"><Sidebar conversations={conversations} activeDeviceId={selectedDeviceId} onConnect={() => setView('connect')} onSelect={(targetDeviceId) => { setSelectedDeviceId(targetDeviceId); setView('transfer'); const targetConversation = conversations.find((conversation) => conversation.deviceId === targetDeviceId); if (targetConversation?.online && !targetConversation.blocked) void connectToPeer(targetDeviceId); }} />{view === 'connect' ? <main className="connect-view"><div className="privacy-banner connect-privacy-banner"><ShieldCheck size={20} /><span><strong>无痕传输</strong> · 文件优先在设备间直连，不保存至服务器</span></div><div className="view-heading"><span className="eyebrow"><BadgeCheck size={17} /> 安全直连</span><h1>连接新设备</h1><p>在手机上打开柚子快传，扫描二维码或输入验证码连接</p></div><ConnectionPanel pairingCode={pairingCode} qrValue={qrValue} invitationText={invitationText} joinCode={joinCode} onJoinCodeChange={setJoinCode} onJoin={() => void join()} onRefresh={() => void refreshPairingCode(true)} busy={busy} />{error && <div className="error-banner">{error}</div>}</main> : <TransferWorkspace nickname={selectedConversation?.nickname ?? DEFAULT_PEER_NICKNAME} avatar={selectedConversation?.avatar ?? DEFAULT_PEER_AVATAR} selfNickname={nickname} selfAvatar={avatar} blocked={selectedConversation?.blocked ?? false} onNicknameChange={changeNickname} onAvatarChange={changeAvatar} onDeleteConversation={deleteConversation} onToggleBlocked={toggleBlockedConversation} relayLimit={relayLimit} transport={transport} connected={isSelectedConnected} items={selectedMessages} onItemsChange={(next) => { if (!selectedDeviceId) return; updateConversation(selectedDeviceId, (conversation) => ({ ...conversation, messages: typeof next === 'function' ? next(conversation.messages) : next })); }} />} </div><footer><span>设备 ID：{deviceId.slice(0, 8)}</span><span><Monitor size={15} /> 当前设备已就绪</span><span><ShieldCheck size={16} /> 无痕模式已开启</span></footer>{pairingError && <ErrorDialog message={pairingError} onClose={() => setPairingError('')} />}</div>;
+  return <div className="app-shell"><header><Brand /><div className="header-meta"><ShieldCheck size={17} /> 不登录 · 不存文件 · 不留记录</div></header><div className="app-body"><Sidebar conversations={conversations} activeDeviceId={selectedDeviceId} activeView={view} onConnect={() => setView('connect')} onSettings={() => setView('settings')} onAbout={() => setView('about')} onSelect={(targetDeviceId) => { setSelectedDeviceId(targetDeviceId); setView('transfer'); const targetConversation = conversations.find((conversation) => conversation.deviceId === targetDeviceId); if (targetConversation?.online && !targetConversation.blocked) void connectToPeer(targetDeviceId); }} />{view === 'connect' ? <main className="connect-view"><div className="privacy-banner connect-privacy-banner"><ShieldCheck size={20} /><span><strong>无痕传输</strong> · 文件优先在设备间直连，不保存至服务器</span></div><div className="view-heading"><span className="eyebrow"><BadgeCheck size={17} /> 安全直连</span><h1>连接新设备</h1><p>在手机上打开柚子快传，扫描二维码或输入验证码连接</p></div><ConnectionPanel pairingCode={pairingCode} qrValue={qrValue} invitationText={invitationText} joinCode={joinCode} onJoinCodeChange={setJoinCode} onJoin={() => void join()} onRefresh={() => void refreshPairingCode(true)} busy={busy} />{error && <div className="error-banner">{error}</div>}</main> : view === 'settings' ? <SettingsView nickname={nickname} avatar={avatar} onNicknameChange={changeNickname} onAvatarChange={changeAvatar} /> : view === 'about' ? <AboutView githubUrl={GITHUB_URL} /> : <TransferWorkspace title={getConversationTitle(selectedConversation)} avatar={selectedConversation?.avatar ?? DEFAULT_PEER_AVATAR} blocked={selectedConversation?.blocked ?? false} onRenameConversation={renameConversation} onDeleteConversation={deleteConversation} onToggleBlocked={toggleBlockedConversation} relayLimit={relayLimit} transport={transport} connected={isSelectedConnected} items={selectedMessages} onItemsChange={(next) => { if (!selectedDeviceId) return; updateConversation(selectedDeviceId, (conversation) => ({ ...conversation, messages: typeof next === 'function' ? next(conversation.messages) : next })); }} />}</div><footer><span>设备 ID：{deviceId.slice(0, 8)}</span><span><Monitor size={15} /> 当前设备已就绪</span><span><ShieldCheck size={16} /> 无痕模式已开启</span></footer>{toastMessage && <Toast message={toastMessage} />}{pairingError && <ErrorDialog message={pairingError} onClose={() => setPairingError('')} />}</div>;
 }
