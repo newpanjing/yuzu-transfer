@@ -11,7 +11,7 @@ import { TransferWorkspace } from './components/TransferWorkspace';
 import { DEFAULT_PEER_AVATAR, DEFAULT_PEER_NICKNAME, DEFAULT_RELAY_LIMIT, PRESENCE_REFRESH_MS } from './constants';
 import { createPairing, exchangePairing, getPresence, getRelayLimit } from './lib/api';
 import { loadConversations, saveConversations } from './lib/conversations';
-import { getAvatar, getDeviceId, getNickname, saveAvatar, saveNickname } from './lib/device';
+import { getAvatar, getDeviceId, getNickname, getStoredPairingCode, saveAvatar, saveNickname, savePairingCode } from './lib/device';
 import { PeerTransport } from './lib/peer';
 import type { Conversation, DeviceProfile, TransferItem, View } from './types';
 
@@ -34,11 +34,15 @@ function getConversationTitle(conversation?: Conversation) {
 }
 
 export default function App() {
-  const [view, setView] = useState<View>('connect');
+  const [restoredSession] = useState(() => {
+    const restoredConversations = loadConversations();
+    return { conversations: restoredConversations, pairingCode: getStoredPairingCode(), selectedDeviceId: restoredConversations[0]?.deviceId ?? null, view: restoredConversations.length > 0 ? 'transfer' as View : 'connect' as View };
+  });
+  const [view, setView] = useState<View>(restoredSession.view);
   const [deviceId] = useState(getDeviceId);
   const [nickname, setNickname] = useState(getNickname);
-  const [avatar, setAvatar] = useState(getAvatar);
-  const [pairingCode, setPairingCode] = useState('');
+  const [avatar, setAvatar] = useState<string>(getAvatar);
+  const [pairingCode, setPairingCode] = useState(restoredSession.pairingCode);
   const [joinCode, setJoinCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -47,8 +51,8 @@ export default function App() {
   const [transport, setTransport] = useState<PeerTransport>();
   const [connected, setConnected] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
-  const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>(restoredSession.conversations);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(restoredSession.selectedDeviceId);
   const activePeerRef = useRef<string | null>(null);
   const autoJoinCode = useRef('');
   const conversationsRef = useRef(conversations);
@@ -117,6 +121,7 @@ export default function App() {
       setError('');
       const pairing = await createPairing(deviceId, forceRefresh);
       setPairingCode(pairing.code);
+      savePairingCode(pairing.code);
     } catch {
       setError(SERVER_ERROR);
     }
@@ -174,6 +179,11 @@ export default function App() {
   useEffect(() => {
     void syncPresence();
   }, [conversations.length]);
+
+  useEffect(() => {
+    if (selectedDeviceId || conversations.length === 0) return;
+    setSelectedDeviceId(conversations[0].deviceId);
+  }, [conversations, selectedDeviceId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => { void syncPresence(); }, PRESENCE_REFRESH_MS);
@@ -251,7 +261,7 @@ export default function App() {
   };
 
   const changeAvatar = (value: string) => {
-    const nextAvatar = value.trim().slice(0, 2);
+    const nextAvatar = value.trim();
     if (!nextAvatar) return;
     saveAvatar(nextAvatar);
     setAvatar(nextAvatar);

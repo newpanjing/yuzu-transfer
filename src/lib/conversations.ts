@@ -1,4 +1,4 @@
-import { DEFAULT_PEER_AVATAR, DEFAULT_PEER_NICKNAME, STORAGE_KEYS } from '../constants';
+import { DEFAULT_PEER_AVATAR, DEFAULT_PEER_NICKNAME, resolveAvatarId, STORAGE_KEYS } from '../constants';
 import type { Conversation, TransferItem } from '../types';
 
 function restoreTransferItem(item: TransferItem): TransferItem {
@@ -12,7 +12,7 @@ export function loadConversations(): Conversation[] {
       deviceId: conversation.deviceId,
       nickname: conversation.nickname ?? DEFAULT_PEER_NICKNAME,
       remark: conversation.remark,
-      avatar: conversation.avatar ?? DEFAULT_PEER_AVATAR,
+      avatar: resolveAvatarId(conversation.avatar ?? DEFAULT_PEER_AVATAR),
       online: conversation.online ?? false,
       blocked: conversation.blocked ?? false,
       messages: (conversation.messages ?? []).map((message) => restoreTransferItem(message)),
