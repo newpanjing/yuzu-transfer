@@ -1,4 +1,7 @@
 import { Citrus } from 'lucide-react';
-import { APP_NAME } from '../constants';
+import { useI18n } from '../lib/i18n';
 
-export function Brand() { return <div className="brand"><span className="brand-mark"><Citrus size={20} /></span><strong>{APP_NAME}</strong><span className="mode-tag">无痕模式</span></div>; }
+export function Brand() {
+  const { t } = useI18n();
+  return <div className="brand"><span className="brand-mark"><Citrus size={20} /></span><strong>{t('brand.appName')}</strong><span className="mode-tag">{t('brand.mode')}</span></div>;
+}

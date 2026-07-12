@@ -1,4 +1,5 @@
-import { DEFAULT_PEER_AVATAR, DEFAULT_PEER_NICKNAME, resolveAvatarId, STORAGE_KEYS } from '../constants';
+import { DEFAULT_PEER_AVATAR, resolveAvatarId, STORAGE_KEYS } from '../constants';
+import { translateNow } from './i18n';
 import type { Conversation, TransferItem } from '../types';
 
 function restoreTransferItem(item: TransferItem): TransferItem {
@@ -10,7 +11,7 @@ export function loadConversations(): Conversation[] {
   try {
     return (JSON.parse(sessionStorage.getItem(STORAGE_KEYS.conversations) ?? '[]') as Array<Partial<Conversation> & Pick<Conversation, 'deviceId'>>).map((conversation) => ({
       deviceId: conversation.deviceId,
-      nickname: conversation.nickname ?? DEFAULT_PEER_NICKNAME,
+      nickname: conversation.nickname ?? translateNow('conversation.defaultPeer'),
       remark: conversation.remark,
       avatar: resolveAvatarId(conversation.avatar ?? DEFAULT_PEER_AVATAR),
       online: conversation.online ?? false,

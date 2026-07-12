@@ -1,5 +1,6 @@
 import { MoreHorizontal } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { useI18n } from '../lib/i18n';
 
 type Props = {
   onRename: () => void;
@@ -11,6 +12,7 @@ type Props = {
 export function ConversationMenu({ onRename, onToggleBlocked, onDelete, blocked }: Props) {
   const [open, setOpen] = useState(false);
   const host = useRef<HTMLDivElement>(null);
+  const { t } = useI18n();
 
   useEffect(() => {
     const close = (event: MouseEvent) => {
@@ -26,5 +28,5 @@ export function ConversationMenu({ onRename, onToggleBlocked, onDelete, blocked 
     action();
   };
 
-  return <div className="conversation-menu" ref={host}><button className="icon-button" onClick={() => setOpen((current) => !current)} aria-label="会话操作"><MoreHorizontal size={16} /></button>{open && <div className="conversation-menu__dropdown"><button onClick={() => handle(onRename)}>改名</button><button onClick={() => handle(onToggleBlocked)}>{blocked ? '解除屏蔽' : '屏蔽会话'}</button><button className="danger" onClick={() => handle(onDelete)}>删除会话</button></div>}</div>;
+  return <div className="conversation-menu" ref={host}><button className="icon-button" onClick={() => setOpen((current) => !current)} aria-label={t('conversation.actions')}><MoreHorizontal size={16} /></button>{open && <div className="conversation-menu__dropdown"><button onClick={() => handle(onRename)}>{t('conversation.rename')}</button><button onClick={() => handle(onToggleBlocked)}>{blocked ? t('conversation.unblock') : t('conversation.block')}</button><button className="danger" onClick={() => handle(onDelete)}>{t('conversation.delete')}</button></div>}</div>;
 }

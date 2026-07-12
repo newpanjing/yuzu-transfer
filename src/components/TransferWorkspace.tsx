@@ -2,6 +2,7 @@ import { File, Image, Paperclip, Send } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_PEER_AVATAR } from '../constants';
 import { createId } from '../lib/id';
+import { useI18n } from '../lib/i18n';
 import { AvatarBadge } from './AvatarBadge';
 import { ConversationMenu } from './ConversationMenu';
 import { FileSaveDialog } from './FileSaveDialog';
@@ -25,25 +26,11 @@ type Props = {
 };
 
 const MEBIBYTE = 1024 * 1024;
-const OFFLINE_NOTICE = '对方不在线，暂时无法发送消息或文件。';
-const BLOCKED_NOTICE = '该会话已屏蔽，解除屏蔽后才能发送或连接。';
-const FILE_SEND_ERROR = '文件发送失败，请检查设备连接。';
-const EXPIRED_FILE_TEXT = '已过期，无法下载';
-const EXPIRED_IMAGE_TEXT = '已过期，无法预览';
-const SESSION_NOTICE = '会话数据仅当前页面有效，关闭页面后将丢失。';
-
 const formatSize = (size: number) => size < MEBIBYTE ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / MEBIBYTE).toFixed(1)} MB`;
-const formatTime = (sentAt: string) => new Date(sentAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 const formatSpeed = (speedBytes = 0) => speedBytes < MEBIBYTE ? `${Math.max(1, Math.round(speedBytes / 1024))} KB/s` : `${(speedBytes / MEBIBYTE).toFixed(1)} MB/s`;
-const formatDuration = (seconds = 0) => {
-  const rounded = Math.max(0, Math.ceil(seconds));
-  if (rounded < 60) return `${rounded} 秒`;
-  const minutes = Math.floor(rounded / 60);
-  const remainder = rounded % 60;
-  return `${minutes} 分 ${remainder} 秒`;
-};
 
 export function TransferWorkspace({ title, avatar, blocked, onRenameConversation, onDeleteConversation, onToggleBlocked, relayLimit, transport, connected, items, onItemsChange }: Props) {
+  const { resolvedLanguage, t } = useI18n();
   const [message, setMessage] = useState('');
   const [notice, setNotice] = useState('');
   const [isDragging, setIsDragging] = useState(false);
@@ -67,14 +54,22 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
   }, [notice]);
 
   const append = (item: TransferItem) => onItemsChange((current) => [...current.filter((currentItem) => currentItem.id !== item.id), item]);
+  const formatTime = (sentAt: string) => new Date(sentAt).toLocaleTimeString(resolvedLanguage, { hour: '2-digit', minute: '2-digit' });
+  const formatDuration = (seconds = 0) => {
+    const rounded = Math.max(0, Math.ceil(seconds));
+    if (rounded < 60) return t('duration.seconds', { value: rounded });
+    const minutes = Math.floor(rounded / 60);
+    const remainder = rounded % 60;
+    return t('duration.minutes', { minutes, seconds: remainder });
+  };
 
   const requirePeerAvailable = () => {
     if (blocked) {
-      setNotice(BLOCKED_NOTICE);
+      setNotice(t('error.blockedNotice'));
       return false;
     }
     if (connected && transport) return true;
-    setNotice(OFFLINE_NOTICE);
+    setNotice(t('error.offlineNotice'));
     return false;
   };
 
@@ -90,7 +85,7 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
     if (!selected || !requirePeerAvailable()) return;
     for (const file of Array.from(selected)) {
       if (file.size > relayLimit) {
-        setNotice(`中转文件不可超过 ${formatSize(relayLimit)}`);
+        setNotice(t('error.relayLimit', { limit: formatSize(relayLimit) }));
         continue;
       }
       const transferId = createId();
@@ -101,7 +96,7 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
       try {
         await transport!.sendFile(file, previewUrl, transferId);
       } catch {
-        setNotice(FILE_SEND_ERROR);
+        setNotice(t('error.fileSend'));
       }
     }
   };
@@ -112,7 +107,7 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
         <AvatarBadge avatarId={avatar || DEFAULT_PEER_AVATAR} online={connected && !blocked} className="peer-avatar" alt={title} />
         <div className="peer-summary">
           <div className="peer-title">{title}</div>
-          <div className="peer-subtitle">{SESSION_NOTICE}</div>
+          <div className="peer-subtitle">{t('workspace.sessionNotice')}</div>
         </div>
         <ConversationMenu onRename={onRenameConversation} onToggleBlocked={onToggleBlocked} onDelete={onDeleteConversation} blocked={blocked} />
       </section>
@@ -123,12 +118,12 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
         onDragLeave={(event) => { if (event.currentTarget === event.target) setIsDragging(false); }}
         onDrop={(event) => { event.preventDefault(); setIsDragging(false); void addFiles(event.dataTransfer.files); }}
       >
-        <div className="date-separator">今天</div>
+        <div className="date-separator">{t('workspace.today')}</div>
         {items.length === 0 && (
           <div className="empty-transfer">
             <Image size={36} />
-            <strong>{blocked ? '该会话已屏蔽' : connected ? '已建立安全连接' : '对方当前不在线'}</strong>
-            <span>{blocked ? '解除屏蔽后才能继续连接和发送' : connected ? '拖入文件、图片或发送消息' : '对方上线后即可发送消息和文件'}</span>
+            <strong>{blocked ? t('workspace.empty.blockedTitle') : connected ? t('workspace.empty.connectedTitle') : t('workspace.empty.offlineTitle')}</strong>
+            <span>{blocked ? t('workspace.empty.blockedBody') : connected ? t('workspace.empty.connectedBody') : t('workspace.empty.offlineBody')}</span>
           </div>
         )}
         <div className="message-list">
@@ -148,11 +143,11 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
               <span>
                 <strong>{item.name}</strong>
                 <small>{formatSize(item.size)}</small>
-                {item.expired && <em className="expired-hint">{item.type === 'image' ? EXPIRED_IMAGE_TEXT : EXPIRED_FILE_TEXT}</em>}
-                {item.progress !== undefined && <small className="transfer-meta">{formatSize(item.transferredBytes ?? 0)} / {formatSize(item.size)} · {formatSpeed(item.speedBytes)} · {item.progress >= 1 ? '已完成' : `剩余 ${formatDuration(item.remainingSeconds)}`}</small>}
+                {item.expired && <em className="expired-hint">{item.type === 'image' ? t('workspace.imageExpired') : t('workspace.fileExpired')}</em>}
+                {item.progress !== undefined && <small className="transfer-meta">{formatSize(item.transferredBytes ?? 0)} / {formatSize(item.size)} · {formatSpeed(item.speedBytes)} · {item.progress >= 1 ? t('workspace.completed') : t('workspace.remaining', { time: formatDuration(item.remainingSeconds) })}</small>}
                 {item.progress !== undefined && item.progress < 1 && <span className="transfer-progress"><i style={{ width: `${Math.round(item.progress * 100)}%` }} />{Math.round(item.progress * 100)}%</span>}
               </span>
-              {item.objectUrl && item.type === 'file' && <a href={item.objectUrl} download={item.name}>下载</a>}
+              {item.objectUrl && item.type === 'file' && <a href={item.objectUrl} download={item.name}>{t('workspace.download')}</a>}
               <time>{formatTime(item.sentAt)}</time>
             </article>
           ))}
@@ -162,9 +157,9 @@ export function TransferWorkspace({ title, avatar, blocked, onRenameConversation
       <section className="composer">
         <input ref={input} hidden type="file" multiple onChange={(event) => void addFiles(event.target.files)} />
         <div className="composer-shell">
-          <button className="icon-button" onClick={() => input.current?.click()} aria-label="选择文件"><Paperclip size={20} /></button>
-          <input value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendText(); }} placeholder={blocked ? '该会话已屏蔽' : connected ? '输入消息或拖拽文件到此处' : '对方不在线，输入消息后将提示'} disabled={blocked} />
-          <button className="send-button" onClick={sendText} aria-label="发送" disabled={blocked}><Send size={18} /></button>
+          <button className="icon-button" onClick={() => input.current?.click()} aria-label={t('workspace.pickFile')}><Paperclip size={20} /></button>
+          <input value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendText(); }} placeholder={blocked ? t('workspace.input.blocked') : connected ? t('workspace.input.connected') : t('workspace.input.offline')} disabled={blocked} />
+          <button className="send-button" onClick={sendText} aria-label={t('workspace.send')} disabled={blocked}><Send size={18} /></button>
         </div>
       </section>
 

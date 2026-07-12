@@ -1,4 +1,5 @@
 import type { DeviceProfile } from '../types';
+import { translateNow } from './i18n';
 
 const DATA_CHANNEL_NAME = 'yuzu-transfer';
 const FILE_CHUNK_SIZE = 64 * 1024;
@@ -7,8 +8,8 @@ const DATA_TYPE = { profile: 'profile', text: 'text', fileStart: 'file-start', f
 const CONNECTION_STATE = { failed: 'failed', disconnected: 'disconnected', closed: 'closed' } as const;
 const DEVELOPMENT_PORT = '5173';
 const SIGNALING_PORT = ':8080';
-const SIGNALING_ERROR = '信令连接失败，请检查服务是否可用。';
-const DATA_CHANNEL_ERROR = '数据通道尚未连接';
+const SIGNALING_ERROR = () => translateNow('peer.signaling');
+const DATA_CHANNEL_ERROR = () => translateNow('peer.dataChannel');
 
 export type IncomingTransfer = { id: string; name: string; size: number; type: 'file' | 'image'; sentAt: string; objectUrl?: string; direction: 'incoming' | 'outgoing'; text?: string; progress?: number; transferredBytes?: number; speedBytes?: number; remainingSeconds?: number };
 type Callbacks = { onOpen: () => void; onClose: () => void; onTransfer: (item: IncomingTransfer) => void; onFileProgress: (item: IncomingTransfer) => void; onPeerProfile: (profile: DeviceProfile) => void; onPeerId: (deviceId: string) => void; onIncomingConnection: () => void; onError: (message: string) => void };
@@ -48,7 +49,7 @@ export class PeerTransport {
       this.socket!.onopen = () => resolve();
       this.socket!.onerror = () => {
         this.signalingFailed = true;
-        if (!this.closed) this.callbacks.onError(SIGNALING_ERROR);
+        if (!this.closed) this.callbacks.onError(SIGNALING_ERROR());
         resolve();
       };
     });
@@ -73,7 +74,7 @@ export class PeerTransport {
   sendText(text: string) { this.sendJson({ type: DATA_TYPE.text, text, sentAt: new Date().toISOString() }); }
 
   async sendFile(file: File, objectUrl?: string, transferId?: string) {
-    if (!this.channel || this.channel.readyState !== 'open') throw new Error(DATA_CHANNEL_ERROR);
+    if (!this.channel || this.channel.readyState !== 'open') throw new Error(DATA_CHANNEL_ERROR());
     const id = transferId ?? `${Date.now()}-${file.name}`;
     const type = file.type.startsWith('image/') ? 'image' : 'file';
     const sentAt = new Date().toISOString();
